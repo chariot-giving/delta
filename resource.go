@@ -23,3 +23,17 @@ type Object interface {
 	// provided on your resource object struct.
 	Kind() string
 }
+
+// ObjectWithInformArgs is an extra interface that a resource may implement on top
+// of Object to provide inform-time options for all resources of this type.
+type ObjectWithInformArgs interface {
+	// InformOpts returns options for all resources of this job type, overriding any
+	// system defaults. These can also be overridden at inform time.
+	InformOpts() InformOpts
+}
+
+// ComparableObject is an interface that combines Object with a method for comparison.
+type ComparableObject interface {
+	Object
+	Compare(other Object) int
+}

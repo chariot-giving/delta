@@ -1,6 +1,8 @@
 package deltatype
 
-import "time"
+import (
+	"time"
+)
 
 type ResourceRow struct {
 	// ID of the resource. Generated as part of a Postgres sequence and generally
@@ -21,6 +23,10 @@ type ResourceRow struct {
 
 	// EncodedObject is the resource's Object encoded as JSON.
 	EncodedObject []byte
+
+	// Hash is a hash of the resource's Object. It is used to determine if the
+	// resource has changed since the last time it was worked.
+	Hash []byte
 
 	// Metadata is a field for storing arbitrary metadata on a resource. It should
 	// always be a valid JSON object payload, and users should not overwrite or
@@ -95,6 +101,17 @@ type AttemptError struct {
 	// Trace contains a stack trace from a job that panicked. The trace is
 	// produced by invoking `debug.Trace()`.
 	Trace string `json:"trace"`
+}
+
+type ObjectInformParams struct {
+}
+
+type ObjectInformResult struct {
+	// Resource is the resource that was informed.
+	Resource *ResourceRow
+
+	// AlreadyExists is true if the resource already existed in the database.
+	AlreadyExists bool
 }
 
 type Namespace struct {

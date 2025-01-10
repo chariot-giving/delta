@@ -3,6 +3,7 @@ package delta
 import (
 	"fmt"
 
+	"github.com/chariot-giving/delta/deltaqueue"
 	"github.com/chariot-giving/delta/internal/object"
 )
 
@@ -51,7 +52,7 @@ func AddControllerSafely[T Object](controllers *Controllers, controller Controll
 // Use the top-level AddController function combined with a Controllers to register a
 // controller.
 type Controllers struct {
-	controllerMap map[string]controllerInfo // job kind -> controller info
+	controllerMap map[string]controllerInfo // resource kind -> controller info
 }
 
 // controllerInfo bundles information about a registered controller for later lookup
@@ -59,6 +60,7 @@ type Controllers struct {
 type controllerInfo struct {
 	object        Object
 	objectFactory object.ObjectFactory
+	worker        deltaqueue.Worker
 }
 
 // NewControllers initializes a new registry of available resource controllers.
@@ -81,6 +83,7 @@ func (w Controllers) add(object Object, objectFactory object.ObjectFactory) erro
 	w.controllerMap[kind] = controllerInfo{
 		object:        object,
 		objectFactory: objectFactory,
+		worker: ,
 	}
 
 	return nil

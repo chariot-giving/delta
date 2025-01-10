@@ -11,9 +11,10 @@ import "context"
 //
 // The Queue implementation is responsible for coordinating job execution
 // across multiple instances of the same Delta client and therefore should
-// provide a way to ensure reliable QoS guarantees and run maintenance tasks.
+// provide a way to ensure reliable QoS guarantees and run maintenance tasks
+// on the underlying job queue.
 // This likely means the Queue implementation should have some form of leader
-// election or consensus mechanism.
+// election or consensus mechanism if its distributed.
 //
 // Delta currently only supports River, and this interface wraps it with only
 // the thinnest possible layer. Adding support for alternate packages will
@@ -36,6 +37,7 @@ type Queue[TTx any] interface {
 }
 
 type Worker interface {
+	Kind() string
 	// Work processes a job.
 	Work(ctx context.Context, job Job) error
 }
@@ -51,7 +53,7 @@ type Job interface {
 	// Name returns the job's name.
 	Kind() string
 	// Args returns the job's arguments.
-	Args() JobArgs
+	//Args() JobArgs
 }
 
 type JobInsertResult struct {

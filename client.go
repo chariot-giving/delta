@@ -2,6 +2,7 @@ package delta
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,7 +12,11 @@ import (
 	"github.com/chariot-giving/delta/deltacommon"
 	"github.com/chariot-giving/delta/deltadriver"
 	"github.com/chariot-giving/delta/deltaqueue"
+	"github.com/chariot-giving/delta/deltashared/util/valutil"
+	"github.com/chariot-giving/delta/deltatype"
+	"github.com/riverqueue/river/rivershared/baseservice"
 	"github.com/riverqueue/river/rivershared/startstop"
+	"github.com/riverqueue/river/rivertype"
 )
 
 // Config is the configuration for a Client.
@@ -55,10 +60,6 @@ type Config struct {
 	// This field may be omitted for a program that's only informing resources rather
 	// than managing them. If it's specified, then Controllers must also be given.
 	Namespaces map[string]NamespaceConfig
-
-	// StreamSchedule?
-
-	// RetryPolicy?
 }
 
 // Indicates whether with the given configuration, this client will be expected
@@ -91,9 +92,10 @@ type NamespaceConfig struct {
 // multiple instances operating on different databases or Postgres schemas
 // within a single database.
 type Client[TTx any] struct {
-	config   *Config
-	driver   deltadriver.Driver[TTx]
-	jobQueue deltaqueue.Queue[TTx]
+	config     *Config
+	driver     deltadriver.Driver[TTx]
+	jobQueue   deltaqueue.Queue[TTx]
+	namespaces *NamespaceBundle
 	// TODO: add namespaces and namespace maintainer
 	stopped <-chan struct{}
 	// workCancel cancels the context used for all work goroutines. Normal Stop
@@ -102,9 +104,9 @@ type Client[TTx any] struct {
 }
 
 var (
-	errMissingConfig                 = errors.New("missing config")
-	errMissingDatabasePoolWithQueues = errors.New("must have a non-nil database pool to control resources (either use a driver with database pool or don't configure Controllers)")
-	errMissingDriver                 = errors.New("missing database driver (try wrapping a Pgx pool with delta/deltadriver/deltapgxv5.New)")
+	errMissingConfig                     = errors.New("missing config")
+	errMissingDatabasePoolWithNamespaces = errors.New("must have a non-nil database pool to control resources (either use a driver with database pool or don't configure Controllers)")
+	errMissingDriver                     = errors.New("missing database driver (try wrapping a Pgx pool with delta/deltadriver/deltapgxv5.New)")
 )
 
 // NewClient creates a new Delta client with the provided configuration.
@@ -127,7 +129,25 @@ func NewClient[TTx any](driver deltadriver.Driver[TTx], queue deltaqueue.Queue[T
 		config:     config,
 		driver:     driver,
 		jobQueue:   queue,
+		namespaces: &NamespaceBundle{},
 		workCancel: func(cause error) {}, // replaced on start, but here in case StopAndCancel is called before start up
+	}
+
+	for namespace, namespaceConfig := range config.Namespaces {
+		client.namespaces.addManager(namespace, namespaceConfig)
+	}
+
+	if config.willManageResources() {
+		if !driver.HasPool() {
+			return nil, errMissingDatabasePoolWithNamespaces
+		}
+
+		// add controllers as workers of the jobqueue
+		if config.Controllers != nil {
+			for _, controller := range config.Controllers.controllerMap {
+				queue.AddWorker(controller.worker)
+			}
+		}
 	}
 
 	return client, nil
@@ -199,4 +219,201 @@ func (c *Client[TTx]) Stop(ctx context.Context) error {
 // It is not affected by any contexts passed to Stop or StopAndCancel.
 func (c *Client[TTx]) Stopped() <-chan struct{} {
 	return c.stopped
+}
+
+// Namespaces returns the currently configured set of namespaces for this client,
+// can can be used to add new ones.
+func (c *Client[TTx]) Namespaces() *NamespaceBundle {
+	return c.namespaces
+}
+
+var errNoDriverDBPool = errors.New("driver must have non-nil database pool to use non-transactional methods like Inform and InformMany (try InformTx or InformManyTx instead")
+
+// Inform informs the Delta Controller about a resource object.
+func (c *Client[TTx]) Inform(ctx context.Context, object Object, opts *InformOpts) (*deltatype.ObjectInformResult, error) {
+	if !c.driver.HasPool() {
+		return nil, errNoDriverDBPool
+	}
+
+	tx, err := c.driver.GetExecutor().Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	informed, err := c.inform(ctx, tx, object, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return informed, nil
+}
+
+func (c *Client[TTx]) inform(ctx context.Context, tx TTx, object Object, opts *InformOpts) (*deltatype.ObjectInformResult, error) {
+	params := []InformManyParams{{Object: object, InformOpts: opts}}
+	results, err := c.validateParamsAndInformMany(ctx, tx, params)
+	if err != nil {
+		return nil, err
+	}
+
+	return results[0], nil
+}
+
+// InformManyParams encapsulates a single resource object combined with options for
+// use with batch insertion.
+type InformManyParams struct {
+	// Object represents the resource to inform.
+	Object Object
+
+	// InformOpts are inform options for this job.
+	InformOpts *InformOpts
+}
+
+// validateParamsAndInformMany is a helper method that wraps the informMany
+// method to provide param validation and conversion prior to calling the actual
+// informMany method.
+func (c *Client[TTx]) validateParamsAndInformMany(ctx context.Context, tx deltadriver.ExecutorTx, params []InformManyParams) ([]*deltatype.ObjectInformResult, error) {
+	informParams, err := c.informManyParams(params)
+	if err != nil {
+		return nil, err
+	}
+
+	return c.informMany(ctx, tx, informParams)
+}
+
+// Validates input parameters for a batch inform operation and generates a set
+// of batch inform parameters.
+func (c *Client[TTx]) informManyParams(params []InformManyParams) ([]*deltatype.ObjectInformParams, error) {
+	if len(params) < 1 {
+		return nil, errors.New("no resources to inform")
+	}
+
+	informParams := make([]*deltatype.ObjectInformParams, len(params))
+	for i, param := range params {
+		if err := c.validateObject(param.Object); err != nil {
+			return nil, err
+		}
+
+		informParamsItem, err := insertParamsFromConfigArgsAndOptions(&c.baseService.Archetype, c.config, param.Object, param.InformOpts)
+		if err != nil {
+			return nil, err
+		}
+
+		informParams[i] = informParamsItem
+	}
+
+	return informParams, nil
+}
+
+// Validates object prior to informing. Currently, verifies that a controller to
+// handle the kind is registered in the configured controllers bundle. An
+// inform-only client doesn't require a controllers bundle be configured though, so
+// no validation occurs if one wasn't.
+func (c *Client[TTx]) validateObject(object Object) error {
+	if c.config.Controllers == nil {
+		return nil
+	}
+
+	if _, ok := c.config.Controllers.controllerMap[object.Kind()]; !ok {
+		return &UnknownResourceKindError{Kind: object.Kind()}
+	}
+
+	return nil
+}
+
+func insertParamsFromConfigArgsAndOptions(archetype *baseservice.Archetype, config *Config, object Object, informOpts *InformOpts) (*deltatype.ObjectInformParams, error) {
+	encodedArgs, err := json.Marshal(object)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling args to JSON: %w", err)
+	}
+
+	if informOpts == nil {
+		informOpts = &InformOpts{}
+	}
+
+	var objectInformOpts InformOpts
+	if objectWithOpts, ok := object.(ObjectWithInformArgs); ok {
+		objectInformOpts = objectWithOpts.InformOpts()
+	}
+
+	// If the time is stubbed (in a test), use that for `created_at`. Otherwise,
+	// leave an empty value which will either use the database's `now()` or be defaulted
+	// by drivers as necessary.
+	createdAt := archetype.Time.NowUTCOrNil()
+
+	namespace := valutil.FirstNonZero(informOpts.Namespace, objectInformOpts.Namespace, deltacommon.NamespaceDefault)
+
+	if err := validateNamespace(namespace); err != nil {
+		return nil, err
+	}
+
+	tags := informOpts.Tags
+	if informOpts.Tags == nil {
+		tags = objectInformOpts.Tags
+	}
+	if tags == nil {
+		tags = []string{}
+	} else {
+		for _, tag := range tags {
+			if len(tag) > 255 {
+				return nil, errors.New("tags should be a maximum of 255 characters long")
+			}
+			if !tagRE.MatchString(tag) {
+				return nil, errors.New("tags should match regex " + tagRE.String())
+			}
+		}
+	}
+
+	hash := informOpts.Hash
+	if len(hash) == 0 {
+		hash = objectInformOpts.Hash
+	}
+
+	metadata := informOpts.Metadata
+	if len(metadata) == 0 {
+		metadata = []byte("{}")
+	}
+
+	insertParams := &deltatype.ObjectInformParams{
+		Args:        args,
+		CreatedAt:   createdAt,
+		EncodedArgs: encodedArgs,
+		Kind:        args.Kind(),
+		MaxAttempts: maxAttempts,
+		Metadata:    metadata,
+		Priority:    priority,
+		Queue:       queue,
+		State:       rivertype.JobStateAvailable,
+		Tags:        tags,
+	}
+	if !uniqueOpts.isEmpty() {
+		internalUniqueOpts := (*dbunique.UniqueOpts)(&uniqueOpts)
+		insertParams.UniqueKey, err = dbunique.UniqueKey(archetype.Time, internalUniqueOpts, insertParams)
+		if err != nil {
+			return nil, err
+		}
+		insertParams.UniqueStates = internalUniqueOpts.StateBitmask()
+	}
+
+	switch {
+	case !insertOpts.ScheduledAt.IsZero():
+		insertParams.ScheduledAt = &insertOpts.ScheduledAt
+		insertParams.State = rivertype.JobStateScheduled
+	case !jobInsertOpts.ScheduledAt.IsZero():
+		insertParams.ScheduledAt = &jobInsertOpts.ScheduledAt
+		insertParams.State = rivertype.JobStateScheduled
+	default:
+		// Use a stubbed time if there was one, but otherwise prefer the value
+		// generated by the database. createdAt is nil unless time is stubbed.
+		insertParams.ScheduledAt = createdAt
+	}
+
+	if insertOpts.Pending {
+		insertParams.State = rivertype.JobStatePending
+	}
+
+	return insertParams, nil
 }

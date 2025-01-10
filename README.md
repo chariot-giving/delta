@@ -32,15 +32,27 @@ Resources are defined via an struct that implements the `Object` interface:
 type User struct {
     Email string
     Name  string
+    UpdatedAt int64
 }
 
-func (e *User) ID() string {
+func (u *User) ID() string {
     // The Email uniquely identifies the user on the external system.
     return e.Email
 }
 
-func (e *User) Kind() string {
+func (u *User) Kind() string {
     return "user"
+}
+
+func (u *User) Compare(other delta.Object) (int, bool) {
+    user, ok := other.(User)
+    if !ok {
+        return 0, false
+    }
+    if u.Email != user.Email {
+        return 0, false
+    }
+    return u.UpdatedAt - user.UpdatedAt, true
 }
 ```
 
@@ -59,7 +71,6 @@ type UserController struct {
 }
 
 // Work does the heavy lifting of processing a resource.
-// This method should be idempotent and safe to run concurrently.
 func (c *UserController) Work(ctx context.Context, resource *delta.Resource[User]) error {
     fmt.Printf("Worked user: %+v\n", resource.Object.Email)
     return nil
@@ -68,6 +79,7 @@ func (c *UserController) Work(ctx context.Context, resource *delta.Resource[User
 // Inform pushes resources into a channel for processing.
 // The nice thing about this is that the Delta library defines the channel semantics
 // to enforce backpressure and rate limiting as well as QoS guarantees on durably enqueueing work.
+// TODO: do we consolidate context + queue + other things into a single struct argument?
 func (c *UserController) Inform(ctx context.Context, queue chan User) {
     resp, _ := http.DefaultClient.Get("https://api.example.com/users", nil)
     defer resp.Body.Close()
@@ -114,6 +126,7 @@ of `Resource` to inform a Delta Controller about a resource object:
 _, err = deltaClient.InformTx(ctx, tx, User{
     Email: "bob@hello.com",
     Name:  "Bob",
+    UpdatedAt: time.Now().Unix(),
 }, nil)
 
 if err != nil {
@@ -124,13 +137,15 @@ if err != nil {
 ## Starting a client
 
 A Delta [`Client`] provides an interface for resource synchronization and background job
-processing. A client's created with a database pool, [driver], and config struct
+processing. A client's created with a database pool, [driver], [queue], and config struct
 containing a `Controllers` bundle and other settings.
 Here's a client `Client` working one namespace (`"default"`) with up to 100 controller
 goroutines at a time:
 
 ```go
-deltaClient, err := delta.NewClient(deltapgxv5.New(dbPool), &delta.Config{
+driver := deltapgxv5.New(dbPool)
+queue := deltariver.New(dbPool)
+deltaClient, err := delta.NewClient(driver, queue, &delta.Config{
     Namespaces: map[string]delta.NamespaceConfig{
         delta.NamespaceDefault: {MaxWorkers: 100},
     },
