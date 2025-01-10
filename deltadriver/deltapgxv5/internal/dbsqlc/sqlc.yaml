@@ -1,0 +1,34 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    queries:
+      - delta_namespace.sql
+      - delta_resource.sql
+    schema:
+      - "../../migrations/*/"
+    gen:
+      go:
+        package: "dbsqlc"
+        sql_package: "pgx/v5"
+        out: "."
+        emit_exact_table_names: true
+        emit_methods_with_db_argument: true
+        emit_params_struct_pointers: true
+        emit_result_struct_pointers: true
+
+        rename:
+          ids: "IDs"
+          ttl: "TTL"
+
+        overrides:
+          - db_type: "pg_catalog.interval"
+            go_type: "time.Duration"
+
+          - db_type: "timestamptz"
+            go_type: "time.Time"
+
+          - db_type: "timestamptz"
+            go_type:
+              type: "time.Time"
+              pointer: true
+            nullable: true

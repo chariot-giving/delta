@@ -1,6 +1,10 @@
 package delta
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/chariot-giving/delta/internal/object"
+)
 
 // Controller is an interface that can manage a resource with object of type T.
 type Controller[T Object] interface {
@@ -38,7 +42,7 @@ func AddController[T Object](controllers *Controllers, controller Controller[T])
 //	delta.AddControllerSafely[User](controllers, &UserController{}).
 func AddControllerSafely[T Object](controllers *Controllers, controller Controller[T]) error {
 	var jobArgs T
-	return controllers.add(jobArgs, &workUnitFactoryWrapper[T]{controller: controller})
+	return controllers.add(jobArgs, &objectFactoryWrapper[T]{controller: controller})
 }
 
 // Controllers is a list of available resource controllers. A Controller must be registered for
@@ -53,8 +57,8 @@ type Controllers struct {
 // controllerInfo bundles information about a registered controller for later lookup
 // in a Controllers bundle.
 type controllerInfo struct {
-	object          Object
-	workUnitFactory workunit.WorkUnitFactory
+	object        Object
+	objectFactory object.ObjectFactory
 }
 
 // NewControllers initializes a new registry of available resource controllers.
@@ -67,7 +71,7 @@ func NewControllers() *Controllers {
 	}
 }
 
-func (w Controllers) add(object Object, workUnitFactory workunit.WorkUnitFactory) error {
+func (w Controllers) add(object Object, objectFactory object.ObjectFactory) error {
 	kind := object.Kind()
 
 	if _, ok := w.controllerMap[kind]; ok {
@@ -75,8 +79,8 @@ func (w Controllers) add(object Object, workUnitFactory workunit.WorkUnitFactory
 	}
 
 	w.controllerMap[kind] = controllerInfo{
-		object:          object,
-		workUnitFactory: workUnitFactory,
+		object:        object,
+		objectFactory: objectFactory,
 	}
 
 	return nil

@@ -68,7 +68,7 @@ func (c *UserController) Work(ctx context.Context, resource *delta.Resource[User
 // Inform pushes resources into a channel for processing.
 // The nice thing about this is that the Delta library defines the channel semantics
 // to enforce backpressure and rate limiting as well as QoS guarantees on durably enqueueing work.
-func (c *UserController) Inform(ctx context.Context, queue chan *delta.Resource[User]) {
+func (c *UserController) Inform(ctx context.Context, queue chan User) {
     resp, _ := http.DefaultClient.Get("https://api.example.com/users", nil)
     defer resp.Body.Close()
 
@@ -85,43 +85,12 @@ func (c *UserController) Inform(ctx context.Context, queue chan *delta.Resource[
             select {
             case <-ctx.Done():
                 break
-            default:
-                queue <- &delta.Resource[User]{Object: &user}
+            case queue <- user:
             }
         }
     }()
 
     return nil
-}
-
-// Stream returns a channel of resource results that should be processed according to a filter.
-// This allows external resources to be streamed into the Delta system.
-func (c *UserController) Stream(ctx context.Context, filter *delta.Filter[User]) (<-chan *delta.Result[User], error) {
-    resp, _ := http.DefaultClient.Get("https://api.example.com/users", nil)
-    defer resp.Body.Close()
-
-    var users []User
-    if err := json.NewDecoder(resp.Body).Decode(&users); err != nil {
-        return err
-    }
-
-    results := make(chan *delta.Result[User])
-    go func() {
-        for _, user := range users {
-            if filter != nil && !filter.Match(&user) {
-                continue
-            }
-            select {
-            case <-ctx.Done():
-                break
-            default:
-                results <- &delta.Result[User]{Resource: &user}
-            }
-        }
-        close(results)
-    }()
-
-    return results
 }
 ```
 
@@ -136,10 +105,10 @@ controllers := delta.NewControllers()
 delta.AddController(controllers, &UserController{})
 ```
 
-## Inserting resources
+## Informing resources
 
 [`Client.InformTx`] is used in conjunction with an instance implementation
-of `Resource` to insert a resource to synchronize on a transaction:
+of `Resource` to inform a Delta Controller about a resource object:
 
 ```go
 _, err = deltaClient.InformTx(ctx, tx, User{
@@ -157,13 +126,13 @@ if err != nil {
 A Delta [`Client`] provides an interface for resource synchronization and background job
 processing. A client's created with a database pool, [driver], and config struct
 containing a `Controllers` bundle and other settings.
-Here's a client `Client` working one queue (`"default"`) with up to 100 controller
+Here's a client `Client` working one namespace (`"default"`) with up to 100 controller
 goroutines at a time:
 
 ```go
 deltaClient, err := delta.NewClient(deltapgxv5.New(dbPool), &delta.Config{
-    Queues: map[string]delta.QueueConfig{
-        delta.QueueDefault: {MaxWorkers: 100},
+    Namespaces: map[string]delta.NamespaceConfig{
+        delta.NamespaceDefault: {MaxWorkers: 100},
     },
     Controllers: controllers,
 })
@@ -199,23 +168,3 @@ The control plane's components make global decisions about how Delta manages res
 ### postgres
 
 Persisted state is stored in a Postgres database.
-
-### Scheduler
-
-The scheduler is responsible for scheduling resources to be processed by controllers.
-
-```go
-type Scheduler interface {
-    Schedule(ctx context.Context, object *deltatype.Object) error
-}
-```
-
-### Syncer
-
-The syncer is responsible for synchronizing resources.
-
-```go
-type Syncer interface {
-    Sync(ctx context.Context, object *deltatype.Object) error
-}
-```
