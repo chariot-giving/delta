@@ -1,5 +1,4 @@
-# delta
-
+/*
 Delta is a robust high-performance resource synchronization system for Go and Postgres.
 
 ## Overview
@@ -29,31 +28,21 @@ it doesn't matter if the overall state is stable or not.
 Resources are defined via an struct that implements the `Object` interface:
 
 ```go
-type User struct {
-    Email string
-    Name  string
-    UpdatedAt int64
-}
 
-func (u *User) ID() string {
-    // The Email uniquely identifies the user on the external system.
-    return e.Email
-}
+	type User struct {
+	    Email string
+	    Name  string
+	}
 
-func (u *User) Kind() string {
-    return "user"
-}
+	func (e *User) ID() string {
+	    // The Email uniquely identifies the user on the external system.
+	    return e.Email
+	}
 
-func (u *User) Compare(other delta.Object) (int, bool) {
-    user, ok := other.(User)
-    if !ok {
-        return 0, false
-    }
-    if u.Email != user.Email {
-        return 0, false
-    }
-    return u.UpdatedAt - user.UpdatedAt, true
-}
+	func (e *User) Kind() string {
+	    return "user"
+	}
+
 ```
 
 ## Controller
@@ -61,49 +50,53 @@ func (u *User) Compare(other delta.Object) (int, bool) {
 Controllers are defined via a struct that implements the `Worker` and `Informer` interfaces:
 
 ```go
-type UserController struct {
-    // An embedded WorkerDefaults sets up default methods to fulfill the rest of
-    // the Worker interface:
-    delta.WorkerDefaults[User]
-    // An embedded StreamDefaults sets up default methods to fulfill the rest of
-    // the Stream interface:
-    delta.InformerDefaults[User]
-}
+
+	type UserController struct {
+	    // An embedded WorkerDefaults sets up default methods to fulfill the rest of
+	    // the Worker interface:
+	    delta.WorkerDefaults[User]
+	    // An embedded StreamDefaults sets up default methods to fulfill the rest of
+	    // the Stream interface:
+	    delta.InformerDefaults[User]
+	}
 
 // Work does the heavy lifting of processing a resource.
-func (c *UserController) Work(ctx context.Context, resource *delta.Resource[User]) error {
-    fmt.Printf("Worked user: %+v\n", resource.Object.Email)
-    return nil
-}
+// This method should be idempotent and safe to run concurrently.
+
+	func (c *UserController) Work(ctx context.Context, resource *delta.Resource[User]) error {
+	    fmt.Printf("Worked user: %+v\n", resource.Object.Email)
+	    return nil
+	}
 
 // Inform pushes resources into a channel for processing.
 // The nice thing about this is that the Delta library defines the channel semantics
 // to enforce backpressure and rate limiting as well as QoS guarantees on durably enqueueing work.
-// TODO: do we consolidate context + queue + other things into a single struct argument?
-func (c *UserController) Inform(ctx context.Context, queue chan User) {
-    resp, _ := http.DefaultClient.Get("https://api.example.com/users", nil)
-    defer resp.Body.Close()
 
-    var users []User
-    if err := json.NewDecoder(resp.Body).Decode(&users); err != nil {
-        return err
-    }
+	func (c *UserController) Inform(ctx context.Context, queue chan User) {
+	    resp, _ := http.DefaultClient.Get("https://api.example.com/users", nil)
+	    defer resp.Body.Close()
 
-    go func() {
-        for _, user := range users {
-            if !c.Match(&user) {
-                continue
-            }
-            select {
-            case <-ctx.Done():
-                break
-            case queue <- user:
-            }
-        }
-    }()
+	    var users []User
+	    if err := json.NewDecoder(resp.Body).Decode(&users); err != nil {
+	        return err
+	    }
 
-    return nil
-}
+	    go func() {
+	        for _, user := range users {
+	            if !c.Match(&user) {
+	                continue
+	            }
+	            select {
+	            case <-ctx.Done():
+	                break
+	            case queue <- user:
+	            }
+	        }
+	    }()
+
+	    return nil
+	}
+
 ```
 
 ### Registering controllers
@@ -123,42 +116,45 @@ delta.AddController(controllers, &UserController{})
 of `Resource` to inform a Delta Controller about a resource object:
 
 ```go
-_, err = deltaClient.InformTx(ctx, tx, User{
-    Email: "bob@hello.com",
-    Name:  "Bob",
-    UpdatedAt: time.Now().Unix(),
-}, nil)
 
-if err != nil {
-    panic(err)
-}
+	_, err = deltaClient.InformTx(ctx, tx, User{
+	    Email: "bob@hello.com",
+	    Name:  "Bob",
+	}, nil)
+
+	if err != nil {
+	    panic(err)
+	}
+
 ```
 
 ## Starting a client
 
 A Delta [`Client`] provides an interface for resource synchronization and background job
-processing. A client's created with a database pool, [driver], [queue], and config struct
+processing. A client's created with a database pool, [driver], and config struct
 containing a `Controllers` bundle and other settings.
 Here's a client `Client` working one namespace (`"default"`) with up to 100 controller
 goroutines at a time:
 
 ```go
-driver := deltapgxv5.New(dbPool)
-queue := deltariver.New(dbPool)
-deltaClient, err := delta.NewClient(driver, queue, &delta.Config{
-    Namespaces: map[string]delta.NamespaceConfig{
-        delta.NamespaceDefault: {MaxWorkers: 100},
-    },
-    Controllers: controllers,
-})
-if err != nil {
-    panic(err)
-}
+
+	deltaClient, err := delta.NewClient(deltapgxv5.New(dbPool), &delta.Config{
+	    Namespaces: map[string]delta.NamespaceConfig{
+	        delta.NamespaceDefault: {MaxWorkers: 100},
+	    },
+	    Controllers: controllers,
+	})
+
+	if err != nil {
+	    panic(err)
+	}
 
 // Run the client inline. All executed processes will inherit from ctx:
-if err := deltaClient.Start(ctx); err != nil {
-    panic(err)
-}
+
+	if err := deltaClient.Start(ctx); err != nil {
+	    panic(err)
+	}
+
 ```
 
 ## Stopping
@@ -167,9 +163,11 @@ The client should also be stopped on program shutdown:
 
 ```go
 // Stop fetching new work and wait for active jobs to finish.
-if err := deltaClient.Stop(ctx); err != nil {
-    panic(err)
-}
+
+	if err := deltaClient.Stop(ctx); err != nil {
+	    panic(err)
+	}
+
 ```
 
 There are some complexities around ensuring clients stop cleanly, but also in a
@@ -183,3 +181,5 @@ The control plane's components make global decisions about how Delta manages res
 ### postgres
 
 Persisted state is stored in a Postgres database.
+*/
+package delta
