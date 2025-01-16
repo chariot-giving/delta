@@ -1,10 +1,15 @@
 package delta
 
 import (
+	"context"
 	"fmt"
+	"time"
 
-	"github.com/chariot-giving/delta/deltaqueue"
+	"github.com/chariot-giving/delta/deltatype"
+	"github.com/chariot-giving/delta/internal/db/sqlc"
 	"github.com/chariot-giving/delta/internal/object"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
 )
 
 // Controller is an interface that can manage a resource with object of type T.
@@ -43,7 +48,9 @@ func AddController[T Object](controllers *Controllers, controller Controller[T])
 //	delta.AddControllerSafely[User](controllers, &UserController{}).
 func AddControllerSafely[T Object](controllers *Controllers, controller Controller[T]) error {
 	var jobArgs T
-	return controllers.add(jobArgs, &objectFactoryWrapper[T]{controller: controller})
+	objectWrapper := &objectFactoryWrapper[T]{controller: controller}
+	adapter := &controllerAdapter[T]{controller: controller}
+	return controllers.add(jobArgs, objectWrapper, adapter)
 }
 
 // Controllers is a list of available resource controllers. A Controller must be registered for
@@ -53,6 +60,7 @@ func AddControllerSafely[T Object](controllers *Controllers, controller Controll
 // controller.
 type Controllers struct {
 	controllerMap map[string]controllerInfo // resource kind -> controller info
+	pool          *pgxpool.Pool
 }
 
 // controllerInfo bundles information about a registered controller for later lookup
@@ -60,20 +68,22 @@ type Controllers struct {
 type controllerInfo struct {
 	object        Object
 	objectFactory object.ObjectFactory
-	worker        deltaqueue.Worker
+	worker        river.Worker[Object]
+	informer      river.Worker[InformArgs]
 }
 
 // NewControllers initializes a new registry of available resource controllers.
 //
 // Use the top-level AddController function combined with a Controllers registry to
 // register each available controller.
-func NewControllers() *Controllers {
+func NewControllers(pool *pgxpool.Pool) *Controllers {
 	return &Controllers{
 		controllerMap: make(map[string]controllerInfo),
+		pool:          pool,
 	}
 }
 
-func (w Controllers) add(object Object, objectFactory object.ObjectFactory) error {
+func (w Controllers) add(object Object, objectFactory object.ObjectFactory, controller controllerInterface) error {
 	kind := object.Kind()
 
 	if _, ok := w.controllerMap[kind]; ok {
@@ -83,7 +93,88 @@ func (w Controllers) add(object Object, objectFactory object.ObjectFactory) erro
 	w.controllerMap[kind] = controllerInfo{
 		object:        object,
 		objectFactory: objectFactory,
-		worker: ,
+		worker: &controllerWorker{
+			pool:    w.pool,
+			factory: objectFactory,
+		},
+		informer: &controllerInformer{
+			pool:       w.pool,
+			factory:    objectFactory,
+			controller: controller,
+		},
+	}
+
+	return nil
+}
+
+type controllerWorker struct {
+	pool    *pgxpool.Pool
+	factory object.ObjectFactory
+	river.WorkerDefaults[Object]
+}
+
+func (w *controllerWorker) Work(ctx context.Context, job *river.Job[Object]) error {
+	queries := sqlc.New(w.pool)
+	resource, err := queries.ResourceUpdateAndGetByObjectIDAndKind(ctx, &sqlc.ResourceUpdateAndGetByObjectIDAndKindParams{
+		ObjectID: job.Args.ID(),
+		Kind:     job.Args.Kind(),
+	})
+	if err != nil {
+		// TODO: wrap error
+		return err
+	}
+	resourceRow := deltatype.ResourceRow{
+		ID:            resource.ID,
+		ObjectID:      resource.ObjectID,
+		Kind:          resource.Kind,
+		Namespace:     resource.Namespace,
+		EncodedObject: resource.Object,
+		Hash:          resource.Hash,
+		Metadata:      resource.Metadata,
+		CreatedAt:     resource.CreatedAt,
+		SyncedAt:      resource.SyncedAt,
+		Attempt:       int(resource.Attempt),
+		MaxAttempts:   int(resource.MaxAttempts),
+		State:         deltatype.ResourceState(resource.State),
+		Tags:          resource.Tags,
+	}
+	object := w.factory.Make(&resourceRow)
+	if err := object.UnmarshalResource(); err != nil {
+		return fmt.Errorf("failed to unmarshal resource: %w", err)
+	}
+
+	// do the work!
+	err = object.Work(ctx)
+	if err != nil {
+		state := sqlc.DeltaResourceStateFailed
+		if job.Attempt >= job.MaxAttempts {
+			state = sqlc.DeltaResourceStateDegraded
+		}
+		_, uerr := queries.ResourceSetState(ctx, &sqlc.ResourceSetStateParams{
+			ID:      resource.ID,
+			Column1: true,
+			State:   state,
+			Column3: false,
+			Column5: true,
+			Column6: []byte(err.Error()),
+		})
+		if uerr != nil {
+			return uerr
+		}
+		return err
+	}
+
+	now := time.Now()
+	_, err = queries.ResourceSetState(ctx, &sqlc.ResourceSetStateParams{
+		ID:       resource.ID,
+		Column1:  true,
+		State:    sqlc.DeltaResourceStateSynced,
+		Column3:  true,
+		SyncedAt: &now,
+		Column5:  false,
+	})
+	if err != nil {
+		return err
 	}
 
 	return nil

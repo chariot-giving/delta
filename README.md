@@ -7,18 +7,19 @@ Delta is a robust high-performance resource synchronization system for Go and Po
 In robotics and automation, a control loop is a non-terminating loop that regulates the state of a system.
 
 In Delta, controllers are control loops that watch the state of your database resources,
-then make or request changes where needed.
+check for state changes externally, and then make or request changes where needed.
 Each controller tries to move the current database state closer to the desired state.
 
 ### Controller Pattern
 
 A controller tracks at least one Delta resource type.
-These objects have a spec field that represents the desired state.
+These objects are defined as structs that implement the `Object` interface.
 The controller(s) for that resource are responsible for making the current state come closer to that desired state.
 
 ### Desired versus current state
 
-Your database could be changing at any point as work happens and control loops automatically fix failures.
+Your database or external systems could be changing at any point as work happens
+and control loops automatically fix failures and discrepancies.
 This means that, potentially, your database never reaches a stable state.
 
 As long as the controllers for your database are running and able to make useful changes,
@@ -58,7 +59,7 @@ func (u *User) Compare(other delta.Object) (int, bool) {
 
 ## Controller
 
-Controllers are defined via a struct that implements the `Worker` and `Informer` interfaces:
+Controllers are defined via a struct that implement the `Worker` and `Informer` interfaces:
 
 ```go
 type UserController struct {
@@ -80,7 +81,7 @@ func (c *UserController) Work(ctx context.Context, resource *delta.Resource[User
 // The nice thing about this is that the Delta library defines the channel semantics
 // to enforce backpressure and rate limiting as well as QoS guarantees on durably enqueueing work.
 // TODO: do we consolidate context + queue + other things into a single struct argument?
-func (c *UserController) Inform(ctx context.Context, queue chan User) {
+func (c *UserController) Inform(ctx context.Context, queue chan User, opts *InformOptions) error {
     resp, _ := http.DefaultClient.Get("https://api.example.com/users", nil)
     defer resp.Body.Close()
 
@@ -96,7 +97,7 @@ func (c *UserController) Inform(ctx context.Context, queue chan User) {
             }
             select {
             case <-ctx.Done():
-                break
+                return ctx.Err()
             case queue <- user:
             }
         }
@@ -143,11 +144,9 @@ Here's a client `Client` working one namespace (`"default"`) with up to 100 cont
 goroutines at a time:
 
 ```go
-driver := deltapgxv5.New(dbPool)
-queue := deltariver.New(dbPool)
-deltaClient, err := delta.NewClient(driver, queue, &delta.Config{
+deltaClient, err := delta.NewClient(dbPool, &delta.Config{
     Namespaces: map[string]delta.NamespaceConfig{
-        delta.NamespaceDefault: {MaxWorkers: 100},
+        delta.NamespaceDefault: {MaxWorkers: 10},
     },
     Controllers: controllers,
 })
@@ -183,3 +182,11 @@ The control plane's components make global decisions about how Delta manages res
 ### postgres
 
 Persisted state is stored in a Postgres database.
+
+## Architecture
+
+The Delta architecture is designed to be modular and extensible.
+Below you will a high-level diagram of the Delta architecture
+and how an application interacts with the Delta system.
+
+![Architecture](./docs/images/architecture.png)
