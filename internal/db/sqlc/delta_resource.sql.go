@@ -10,13 +10,20 @@ import (
 	"time"
 )
 
-const resourceCreate = `-- name: ResourceCreate :one
+const resourceCreateOrUpdate = `-- name: ResourceCreateOrUpdate :one
 INSERT INTO delta_resource (object_id, kind, namespace, state, created_at, object, metadata, tags, hash)
 VALUES ($1, $2, $3, $4, NOW(), $5, $6, $7, $8)
-RETURNING id, state, attempt, max_attempts, attempted_at, created_at, synced_at, object_id, kind, namespace, object, hash, metadata, tags, errors
+ON CONFLICT (object_id, kind) DO UPDATE
+SET state = $4,
+    object = $5,
+    metadata = $6,
+    tags = $7,
+    hash = $8
+RETURNING id, state, attempt, max_attempts, attempted_at, created_at, synced_at, object_id, kind, namespace, object, hash, metadata, tags, errors, 
+    (xmax = 0) as is_insert
 `
 
-type ResourceCreateParams struct {
+type ResourceCreateOrUpdateParams struct {
 	ObjectID  string
 	Kind      string
 	Namespace string
@@ -27,8 +34,27 @@ type ResourceCreateParams struct {
 	Hash      []byte
 }
 
-func (q *Queries) ResourceCreate(ctx context.Context, arg *ResourceCreateParams) (*DeltaResource, error) {
-	row := q.db.QueryRow(ctx, resourceCreate,
+type ResourceCreateOrUpdateRow struct {
+	ID          int64
+	State       DeltaResourceState
+	Attempt     int16
+	MaxAttempts int16
+	AttemptedAt *time.Time
+	CreatedAt   time.Time
+	SyncedAt    *time.Time
+	ObjectID    string
+	Kind        string
+	Namespace   string
+	Object      []byte
+	Hash        []byte
+	Metadata    []byte
+	Tags        []string
+	Errors      [][]byte
+	IsInsert    bool
+}
+
+func (q *Queries) ResourceCreateOrUpdate(ctx context.Context, arg *ResourceCreateOrUpdateParams) (*ResourceCreateOrUpdateRow, error) {
+	row := q.db.QueryRow(ctx, resourceCreateOrUpdate,
 		arg.ObjectID,
 		arg.Kind,
 		arg.Namespace,
@@ -38,7 +64,7 @@ func (q *Queries) ResourceCreate(ctx context.Context, arg *ResourceCreateParams)
 		arg.Tags,
 		arg.Hash,
 	)
-	var i DeltaResource
+	var i ResourceCreateOrUpdateRow
 	err := row.Scan(
 		&i.ID,
 		&i.State,
@@ -55,6 +81,7 @@ func (q *Queries) ResourceCreate(ctx context.Context, arg *ResourceCreateParams)
 		&i.Metadata,
 		&i.Tags,
 		&i.Errors,
+		&i.IsInsert,
 	)
 	return &i, err
 }

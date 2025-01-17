@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/chariot-giving/delta/deltacommon"
+	"github.com/chariot-giving/delta/deltashared/util/valutil"
 	"github.com/chariot-giving/delta/deltatype"
 	"github.com/chariot-giving/delta/internal/db/sqlc"
 	"github.com/chariot-giving/delta/internal/object"
@@ -142,21 +143,20 @@ func (w *controllerInformer) processObject(ctx context.Context, obj Object, args
 	})
 	if err != nil {
 		if pgx.ErrNoRows == err {
-			namespace := deltacommon.NamespaceDefault
 			objectInformOpts := InformOpts{}
-			if objectWithOpts, ok := Object(obj).(ObjectWithInformArgs); ok {
+			if objectWithOpts, ok := Object(obj).(ObjectWithInformOpts); ok {
 				objectInformOpts = objectWithOpts.InformOpts()
 			}
-			if objectInformOpts.Namespace != "" {
-				namespace = objectInformOpts.Namespace
-			}
+
+			namespace := valutil.FirstNonZero(objectInformOpts.Namespace, deltacommon.NamespaceDefault)
+
 			objBytes, err := json.Marshal(obj)
 			if err != nil {
 				return err
 			}
 			hash := sha256.Sum256(objBytes)
 
-			_, err = queries.ResourceCreate(ctx, &sqlc.ResourceCreateParams{
+			_, err = queries.ResourceCreateOrUpdate(ctx, &sqlc.ResourceCreateOrUpdateParams{
 				ObjectID:  obj.ID(),
 				Kind:      obj.Kind(),
 				Namespace: namespace,

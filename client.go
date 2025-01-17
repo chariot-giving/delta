@@ -2,10 +2,14 @@ package delta
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"log/slog"
 	"os"
 	"time"
 
+	"github.com/chariot-giving/delta/deltacommon"
+	"github.com/chariot-giving/delta/deltashared/util/valutil"
 	"github.com/chariot-giving/delta/deltatype"
 	"github.com/chariot-giving/delta/internal/db/sqlc"
 	"github.com/jackc/pgx/v5"
@@ -163,4 +167,84 @@ func (c *Client) Start(ctx context.Context) error {
 
 func (c *Client) Stop(ctx context.Context) error {
 	return c.client.Stop(ctx)
+}
+
+// Inform the Delta system of an object.
+func (c *Client) Inform(ctx context.Context, object Object, opts *InformOpts) (*deltatype.ObjectInformResult, error) {
+	tx, err := c.dbPool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	result, err := c.InformTx(ctx, tx, object, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// InformTx is the same as Inform but allows you to pass in a transaction.
+func (c *Client) InformTx(ctx context.Context, tx pgx.Tx, object Object, opts *InformOpts) (*deltatype.ObjectInformResult, error) {
+	queries := sqlc.New(tx)
+
+	objectInformOpts := InformOpts{}
+	if objectWithOpts, ok := Object(object).(ObjectWithInformOpts); ok {
+		objectInformOpts = objectWithOpts.InformOpts()
+	}
+
+	namespace := valutil.FirstNonZero(opts.Namespace, objectInformOpts.Namespace, deltacommon.NamespaceDefault)
+
+	objBytes, err := json.Marshal(object)
+	if err != nil {
+		return nil, err
+	}
+	hash := sha256.Sum256(objBytes)
+
+	res, err := queries.ResourceCreateOrUpdate(ctx, &sqlc.ResourceCreateOrUpdateParams{
+		ObjectID:  object.ID(),
+		Kind:      object.Kind(),
+		Namespace: namespace,
+		State:     sqlc.DeltaResourceStateScheduled,
+		Object:    objBytes,
+		Metadata:  objectInformOpts.Metadata,
+		Tags:      objectInformOpts.Tags,
+		Hash:      hash[:],
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = c.client.InsertTx(ctx, tx, object, &river.InsertOpts{
+		Queue:    "resource",
+		Tags:     objectInformOpts.Tags,
+		Metadata: objectInformOpts.Metadata,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &deltatype.ObjectInformResult{
+		Resource: &deltatype.ResourceRow{
+			ID:            res.ID,
+			ObjectID:      res.ObjectID,
+			Kind:          res.Kind,
+			Namespace:     res.Namespace,
+			EncodedObject: res.Object,
+			Hash:          res.Hash,
+			Metadata:      res.Metadata,
+			CreatedAt:     res.CreatedAt,
+			SyncedAt:      res.SyncedAt,
+			Attempt:       int(res.Attempt),
+			MaxAttempts:   int(res.MaxAttempts),
+			State:         deltatype.ResourceState(res.State),
+			Tags:          res.Tags,
+		},
+		AlreadyExists: !res.IsInsert,
+	}, nil
 }

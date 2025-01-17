@@ -39,7 +39,14 @@ SET state = CASE
     END
 WHERE id = @id
 RETURNING *;
--- name: ResourceCreate :one
+-- name: ResourceCreateOrUpdate :one
 INSERT INTO delta_resource (object_id, kind, namespace, state, created_at, object, metadata, tags, hash)
 VALUES ($1, $2, $3, $4, NOW(), $5, $6, $7, $8)
-RETURNING *;
+ON CONFLICT (object_id, kind) DO UPDATE
+SET state = $4,
+    object = $5,
+    metadata = $6,
+    tags = $7,
+    hash = $8
+RETURNING *, 
+    (xmax = 0) as is_insert;
