@@ -78,9 +78,6 @@ func (c *UserController) Work(ctx context.Context, resource *delta.Resource[User
 }
 
 // Inform pushes resources into a channel for processing.
-// The nice thing about this is that the Delta library defines the channel semantics
-// to enforce backpressure and rate limiting as well as QoS guarantees on durably enqueueing work.
-// TODO: do we consolidate context + queue + other things into a single struct argument?
 func (c *UserController) Inform(ctx context.Context, queue chan User, opts *InformOptions) error {
     resp, _ := http.DefaultClient.Get("https://api.example.com/users", nil)
     defer resp.Body.Close()
@@ -138,9 +135,9 @@ if err != nil {
 ## Starting a client
 
 A Delta [`Client`] provides an interface for resource synchronization and background job
-processing. A client's created with a database pool, [driver], [queue], and config struct
+processing. A client's created with a database pool and config struct
 containing a `Controllers` bundle and other settings.
-Here's a client `Client` working one namespace (`"default"`) with up to 100 controller
+Here's a client `Client` working one namespace (`"default"`) with up to 10 controller
 goroutines at a time:
 
 ```go
