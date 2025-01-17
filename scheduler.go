@@ -31,6 +31,9 @@ func (s InformScheduleArgs) InsertOpts() river.InsertOpts {
 
 // controllerInformerScheduler is a worker that schedules inform jobs for controllers
 // this effectively delegates the work to the informer controller workers via river
+// This pattern allows us to have >1 delta client running configured with different controllers
+// all pointing and using the same delta database/schema.
+// You can think about it as a periodic job delegator/scheduler.
 type controllerInformerScheduler struct {
 	pool *pgxpool.Pool
 	river.WorkerDefaults[InformScheduleArgs]
@@ -58,6 +61,7 @@ func (w *controllerInformerScheduler) Work(ctx context.Context, job *river.Job[I
 			}
 		}
 		_, err = riverClient.Insert(ctx, InformArgs{
+			ID:              informer.ID,
 			ResourceKind:    informer.ResourceKind,
 			ProcessExisting: informer.ProcessExisting,
 			RunForeground:   informer.RunForeground,

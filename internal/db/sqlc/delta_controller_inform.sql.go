@@ -57,6 +57,27 @@ func (q *Queries) ControllerInformCreate(ctx context.Context, arg *ControllerInf
 	return &i, err
 }
 
+const controllerInformGet = `-- name: ControllerInformGet :one
+SELECT id, resource_kind, last_inform_time, process_existing, run_foreground, num_resources, opts, metadata FROM delta_controller_inform
+WHERE id = $1
+`
+
+func (q *Queries) ControllerInformGet(ctx context.Context, id int32) (*DeltaControllerInform, error) {
+	row := q.db.QueryRow(ctx, controllerInformGet, id)
+	var i DeltaControllerInform
+	err := row.Scan(
+		&i.ID,
+		&i.ResourceKind,
+		&i.LastInformTime,
+		&i.ProcessExisting,
+		&i.RunForeground,
+		&i.NumResources,
+		&i.Opts,
+		&i.Metadata,
+	)
+	return &i, err
+}
+
 const controllerInformReadyList = `-- name: ControllerInformReadyList :many
 SELECT id, resource_kind, last_inform_time, process_existing, run_foreground, num_resources, opts, metadata FROM delta_controller_inform
 WHERE

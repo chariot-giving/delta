@@ -6,6 +6,8 @@ import (
 	"regexp"
 )
 
+const namespaceDefault = "default"
+
 // NamespaceConfig contains namespace-specific configuration.
 type NamespaceConfig struct {
 	// MaxWorkers is the maximum number of workers to run for the namespace, or put

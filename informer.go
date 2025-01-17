@@ -9,8 +9,6 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/chariot-giving/delta/deltacommon"
-	"github.com/chariot-giving/delta/deltashared/util/valutil"
 	"github.com/chariot-giving/delta/deltatype"
 	"github.com/chariot-giving/delta/internal/db/sqlc"
 	"github.com/chariot-giving/delta/internal/object"
@@ -43,6 +41,8 @@ type Informer[T Object] interface {
 }
 
 type InformArgs struct {
+	// The ID of the controller inform record
+	ID int32
 	// ResourceKind is the kind of resource to inform
 	// Required parameter
 	ResourceKind string `river:"unique"`
@@ -83,18 +83,40 @@ type controllerInformer struct {
 }
 
 func (w *controllerInformer) Work(ctx context.Context, job *river.Job[InformArgs]) error {
+	queries := sqlc.New(w.pool)
+
+	inform, err := queries.ControllerInformGet(ctx, job.Args.ID)
+	if err != nil {
+		return err
+	}
+
+	var opts InformOptions
+	if err := json.Unmarshal(inform.Opts, &opts); err != nil {
+		return err
+	}
+
+	metadata := opts.Labels
+	if len(job.Args.Options.Labels) > 0 {
+		metadata = job.Args.Options.Labels
+	}
+	informOpts := InformOptions{
+		Labels:  metadata,
+		Since:   firstNonZero(job.Args.Options.Since, inform.LastInformTime),
+		OrderBy: firstNonZero(job.Args.Options.OrderBy, opts.OrderBy),
+		Limit:   firstNonZero(job.Args.Options.Limit, opts.Limit),
+	}
+
 	// Set a 5-minute deadline for the entire operation
 	ctx, cancel := context.WithTimeout(ctx, w.Timeout(job))
 	defer cancel()
 
 	queue := make(chan Object)
-
-	// Create error channel to catch errors from the Inform goroutine
 	errChan := make(chan error, 1)
+	var numResources int64
 
 	go func() {
 		defer close(queue)
-		errChan <- w.controller.Inform(ctx, queue, job.Args.Options)
+		errChan <- w.controller.Inform(ctx, queue, &informOpts)
 	}()
 
 	for {
@@ -105,8 +127,20 @@ func (w *controllerInformer) Work(ctx context.Context, job *river.Job[InformArgs
 				if err := <-errChan; err != nil {
 					return fmt.Errorf("inform error: %w", err)
 				}
+				// happy path: successfully informed all resources
+				// this is to keep track of the last successful inform time
+				// so that we can filter resources that have changed since then
+				// in subsequent inform jobs
+				err := queries.ControllerInformSetInformed(ctx, &sqlc.ControllerInformSetInformedParams{
+					ID:           job.Args.ID,
+					NumResources: numResources,
+				})
+				if err != nil {
+					return err
+				}
 				return nil
 			}
+			numResources++
 			if err := w.processObject(ctx, obj, &job.Args); err != nil {
 				return err
 			}
@@ -148,7 +182,7 @@ func (w *controllerInformer) processObject(ctx context.Context, obj Object, args
 				objectInformOpts = objectWithOpts.InformOpts()
 			}
 
-			namespace := valutil.FirstNonZero(objectInformOpts.Namespace, deltacommon.NamespaceDefault)
+			namespace := firstNonZero(objectInformOpts.Namespace, namespaceDefault)
 
 			objBytes, err := json.Marshal(obj)
 			if err != nil {

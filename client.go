@@ -8,8 +8,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/chariot-giving/delta/deltacommon"
-	"github.com/chariot-giving/delta/deltashared/util/valutil"
 	"github.com/chariot-giving/delta/deltatype"
 	"github.com/chariot-giving/delta/internal/db/sqlc"
 	"github.com/jackc/pgx/v5"
@@ -52,10 +50,6 @@ type Config struct {
 	// ahead of time that a controller is properly registered for an inserted resource.
 	// (i.e.  That it wasn't forgotten by accident.)
 	Controllers *Controllers
-
-	// ObjectInformMiddleware are optional functions that can be called around object
-	// inform.
-	ObjectInformMiddleware []deltatype.ObjectInformMiddleware
 
 	// Namespaces is a list of namespaces for this client to operate on along
 	// with configuration for each namespace.
@@ -198,7 +192,7 @@ func (c *Client) InformTx(ctx context.Context, tx pgx.Tx, object Object, opts *I
 		objectInformOpts = objectWithOpts.InformOpts()
 	}
 
-	namespace := valutil.FirstNonZero(opts.Namespace, objectInformOpts.Namespace, deltacommon.NamespaceDefault)
+	namespace := firstNonZero(opts.Namespace, objectInformOpts.Namespace, namespaceDefault)
 
 	objBytes, err := json.Marshal(object)
 	if err != nil {
@@ -247,4 +241,32 @@ func (c *Client) InformTx(ctx context.Context, tx pgx.Tx, object Object, opts *I
 		},
 		AlreadyExists: !res.IsInsert,
 	}, nil
+}
+
+// ScheduleInform schedules an inform job for a controller to sync resources.
+func (c *Client) ScheduleInform(ctx context.Context, params ScheduleInformParams, informOpts *InformOptions) error {
+	queries := sqlc.New(c.dbPool)
+
+	optsBytes, err := json.Marshal(informOpts)
+	if err != nil {
+		return err
+	}
+
+	_, err = queries.ControllerInformCreate(ctx, &sqlc.ControllerInformCreateParams{
+		ResourceKind:    params.ResourceKind,
+		ProcessExisting: params.ProcessExisting,
+		RunForeground:   params.RunForeground,
+		Opts:            optsBytes,
+	})
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+type ScheduleInformParams struct {
+	ResourceKind    string
+	ProcessExisting bool
+	RunForeground   bool
 }

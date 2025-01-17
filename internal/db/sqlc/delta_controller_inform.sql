@@ -31,3 +31,7 @@ SET
     last_inform_time = now(),
     num_resources = @num_resources
 WHERE id = @id;
+
+-- name: ControllerInformGet :one
+SELECT * FROM delta_controller_inform
+WHERE id = @id;
