@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"log"
 	"reflect"
 	"time"
 
@@ -37,7 +38,7 @@ type InformOptions struct {
 // Informer is an interface that provides a way to inform the controller of resources.
 type Informer[T Object] interface {
 	// Inform informs the controller of resources.
-	Inform(ctx context.Context, queue chan T, opts *InformOptions) error
+	Inform(ctx context.Context, opts *InformOptions) (<-chan T, error)
 }
 
 type InformArgs struct {
@@ -59,7 +60,7 @@ type InformArgs struct {
 }
 
 func (i InformArgs) Kind() string {
-	return fmt.Sprintf("delta.controller.%s.inform", i.ResourceKind)
+	return "delta.controller.inform"
 }
 
 func (i InformArgs) InsertOpts() river.InsertOpts {
@@ -75,24 +76,26 @@ func (i InformArgs) InsertOpts() river.InsertOpts {
 
 // controllerInformer is a worker that informs the controller of resources from external sources.
 // It is meant to be run as a periodic job, but can also be run adhoc.
-type controllerInformer struct {
+type controllerInformer[T Object] struct {
 	pool       *pgxpool.Pool
 	factory    object.ObjectFactory
-	controller controllerInterface
+	controller controllerInterface[T]
 	river.WorkerDefaults[InformArgs]
 }
 
-func (w *controllerInformer) Work(ctx context.Context, job *river.Job[InformArgs]) error {
+func (w *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformArgs]) error {
 	queries := sqlc.New(w.pool)
 
 	inform, err := queries.ControllerInformGet(ctx, job.Args.ID)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get controller inform record: %w", err)
 	}
 
 	var opts InformOptions
-	if err := json.Unmarshal(inform.Opts, &opts); err != nil {
-		return err
+	if inform.Opts != nil {
+		if err := json.Unmarshal(inform.Opts, &opts); err != nil {
+			return fmt.Errorf("failed to unmarshal inform opts: %w", err)
+		}
 	}
 
 	metadata := opts.Labels
@@ -110,23 +113,19 @@ func (w *controllerInformer) Work(ctx context.Context, job *river.Job[InformArgs
 	ctx, cancel := context.WithTimeout(ctx, w.Timeout(job))
 	defer cancel()
 
-	queue := make(chan Object)
-	errChan := make(chan error, 1)
 	var numResources int64
 
-	go func() {
-		defer close(queue)
-		errChan <- w.controller.Inform(ctx, queue, &informOpts)
-	}()
+	log.Println("Starting Inform")
+	queue, err := w.controller.Inform(ctx, &informOpts)
+	if err != nil {
+		return fmt.Errorf("failed to inform controller: %w", err)
+	}
 
 	for {
 		select {
 		case obj, ok := <-queue:
 			if !ok {
-				// Channel closed, check for errors from Inform
-				if err := <-errChan; err != nil {
-					return fmt.Errorf("inform error: %w", err)
-				}
+				log.Println("Inform finished")
 				// happy path: successfully informed all resources
 				// this is to keep track of the last successful inform time
 				// so that we can filter resources that have changed since then
@@ -141,6 +140,7 @@ func (w *controllerInformer) Work(ctx context.Context, job *river.Job[InformArgs
 				return nil
 			}
 			numResources++
+			log.Printf("Processing object: %v", obj)
 			if err := w.processObject(ctx, obj, &job.Args); err != nil {
 				return err
 			}
@@ -150,14 +150,14 @@ func (w *controllerInformer) Work(ctx context.Context, job *river.Job[InformArgs
 	}
 }
 
-func (w *controllerInformer) Timeout(job *river.Job[InformArgs]) time.Duration {
+func (w *controllerInformer[T]) Timeout(job *river.Job[InformArgs]) time.Duration {
 	if job.Args.ProcessExisting {
 		return 5 * time.Minute
 	}
 	return 1 * time.Minute
 }
 
-func (w *controllerInformer) processObject(ctx context.Context, obj Object, args *InformArgs) error {
+func (w *controllerInformer[T]) processObject(ctx context.Context, obj Object, args *InformArgs) error {
 	riverClient, err := river.ClientFromContextSafely[pgx.Tx](ctx)
 	if err != nil {
 		return err
@@ -184,58 +184,57 @@ func (w *controllerInformer) processObject(ctx context.Context, obj Object, args
 
 			namespace := firstNonZero(objectInformOpts.Namespace, namespaceDefault)
 
+			// TODO: clean this up
+			if len(objectInformOpts.Metadata) == 0 {
+				objectInformOpts.Metadata = []byte(`{}`)
+			}
+			if len(objectInformOpts.Tags) == 0 {
+				objectInformOpts.Tags = []string{}
+			}
+
 			objBytes, err := json.Marshal(obj)
 			if err != nil {
 				return err
 			}
 			hash := sha256.Sum256(objBytes)
 
-			_, err = queries.ResourceCreateOrUpdate(ctx, &sqlc.ResourceCreateOrUpdateParams{
-				ObjectID:  obj.ID(),
-				Kind:      obj.Kind(),
-				Namespace: namespace,
-				State:     sqlc.DeltaResourceStateScheduled,
-				Object:    objBytes,
-				Metadata:  objectInformOpts.Metadata,
-				Tags:      objectInformOpts.Tags,
-				Hash:      hash[:],
+			res, err := queries.ResourceCreateOrUpdate(ctx, &sqlc.ResourceCreateOrUpdateParams{
+				ObjectID:    obj.ID(),
+				Kind:        obj.Kind(),
+				Namespace:   namespace,
+				State:       sqlc.DeltaResourceStateScheduled,
+				Object:      objBytes,
+				Metadata:    objectInformOpts.Metadata,
+				Tags:        objectInformOpts.Tags,
+				Hash:        hash[:],
+				MaxAttempts: 10, // TODO: make this configurable
 			})
 			if err != nil {
 				return err
 			}
 
-			// and then enqueue a river job
-			_, err = riverClient.InsertTx(ctx, tx, obj, &river.InsertOpts{
-				Queue:    "resource",
-				Tags:     objectInformOpts.Tags,
-				Metadata: objectInformOpts.Metadata,
-			})
-			if err != nil {
-				return err
+			if res.IsInsert {
+				resourceRow := toResourceRow(&res.DeltaResource)
+				// and then enqueue a river job
+				_, err = riverClient.InsertTx(ctx, tx, Resource[T]{ResourceRow: &resourceRow, Object: obj.(T)}, &river.InsertOpts{
+					Queue:    "resource",
+					Tags:     objectInformOpts.Tags,
+					Metadata: objectInformOpts.Metadata,
+				})
+				if err != nil {
+					return err
+				}
+			} else {
+				// TODO: how do we want to handle updates?
 			}
 
 			return tx.Commit(ctx)
 		}
 		return err
 	}
-	resourceRow := deltatype.ResourceRow{
-		ID:            resource.ID,
-		ObjectID:      resource.ObjectID,
-		Kind:          resource.Kind,
-		Namespace:     resource.Namespace,
-		EncodedObject: resource.Object,
-		Hash:          resource.Hash,
-		Metadata:      resource.Metadata,
-		CreatedAt:     resource.CreatedAt,
-		SyncedAt:      resource.SyncedAt,
-		Attempt:       int(resource.Attempt),
-		MaxAttempts:   int(resource.MaxAttempts),
-		State:         deltatype.ResourceState(resource.State),
-		Tags:          resource.Tags,
-	}
 
 	// comparison
-	compare, err := w.compareObjects(obj, resourceRow)
+	compare, err := w.compareObjects(obj, toResourceRow(resource))
 	if err != nil {
 		return err
 	}
@@ -247,7 +246,7 @@ func (w *controllerInformer) processObject(ctx context.Context, obj Object, args
 	// update the resource to be scheduled
 	// TODO: likely want to update object and hash state here
 	// but may not want to pre-emptively do it before the worker...?
-	_, err = queries.ResourceSetState(ctx, &sqlc.ResourceSetStateParams{
+	updated, err := queries.ResourceSetState(ctx, &sqlc.ResourceSetStateParams{
 		ID:      resource.ID,
 		Column1: true,
 		State:   sqlc.DeltaResourceStateScheduled,
@@ -256,7 +255,8 @@ func (w *controllerInformer) processObject(ctx context.Context, obj Object, args
 		return err
 	}
 
-	_, err = riverClient.InsertTx(ctx, tx, obj, &river.InsertOpts{
+	resourceRow := toResourceRow(updated)
+	_, err = riverClient.InsertTx(ctx, tx, resourceRow, &river.InsertOpts{
 		Queue:    "resource",
 		Tags:     resourceRow.Tags,
 		Metadata: resourceRow.Metadata,
@@ -268,7 +268,7 @@ func (w *controllerInformer) processObject(ctx context.Context, obj Object, args
 	return tx.Commit(ctx)
 }
 
-func (w *controllerInformer) compareObjects(object Object, resource deltatype.ResourceRow) (int, error) {
+func (w *controllerInformer[T]) compareObjects(object Object, resource deltatype.ResourceRow) (int, error) {
 	resourceObject := w.factory.Make(&resource)
 	if err := resourceObject.UnmarshalResource(); err != nil {
 		return 0, fmt.Errorf("failed to unmarshal resource: %w", err)

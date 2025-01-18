@@ -11,46 +11,34 @@ import (
 )
 
 const resourceCreateOrUpdate = `-- name: ResourceCreateOrUpdate :one
-INSERT INTO delta_resource (object_id, kind, namespace, state, created_at, object, metadata, tags, hash)
-VALUES ($1, $2, $3, $4, NOW(), $5, $6, $7, $8)
+INSERT INTO delta_resource (object_id, kind, namespace, state, created_at, object, metadata, tags, hash, max_attempts)
+VALUES ($1, $2, $3, $4, NOW(), $5, $6, $7, $8, $9)
 ON CONFLICT (object_id, kind) DO UPDATE
 SET state = $4,
     object = $5,
     metadata = $6,
     tags = $7,
-    hash = $8
-RETURNING id, state, attempt, max_attempts, attempted_at, created_at, synced_at, object_id, kind, namespace, object, hash, metadata, tags, errors, 
+    hash = $8,
+    max_attempts = $9
+RETURNING delta_resource.id, delta_resource.state, delta_resource.attempt, delta_resource.max_attempts, delta_resource.attempted_at, delta_resource.created_at, delta_resource.synced_at, delta_resource.object_id, delta_resource.kind, delta_resource.namespace, delta_resource.object, delta_resource.hash, delta_resource.metadata, delta_resource.tags, delta_resource.errors, 
     (xmax = 0) as is_insert
 `
 
 type ResourceCreateOrUpdateParams struct {
-	ObjectID  string
-	Kind      string
-	Namespace string
-	State     DeltaResourceState
-	Object    []byte
-	Metadata  []byte
-	Tags      []string
-	Hash      []byte
-}
-
-type ResourceCreateOrUpdateRow struct {
-	ID          int64
-	State       DeltaResourceState
-	Attempt     int16
-	MaxAttempts int16
-	AttemptedAt *time.Time
-	CreatedAt   time.Time
-	SyncedAt    *time.Time
 	ObjectID    string
 	Kind        string
 	Namespace   string
+	State       DeltaResourceState
 	Object      []byte
-	Hash        []byte
 	Metadata    []byte
 	Tags        []string
-	Errors      [][]byte
-	IsInsert    bool
+	Hash        []byte
+	MaxAttempts int16
+}
+
+type ResourceCreateOrUpdateRow struct {
+	DeltaResource DeltaResource
+	IsInsert      bool
 }
 
 func (q *Queries) ResourceCreateOrUpdate(ctx context.Context, arg *ResourceCreateOrUpdateParams) (*ResourceCreateOrUpdateRow, error) {
@@ -63,24 +51,25 @@ func (q *Queries) ResourceCreateOrUpdate(ctx context.Context, arg *ResourceCreat
 		arg.Metadata,
 		arg.Tags,
 		arg.Hash,
+		arg.MaxAttempts,
 	)
 	var i ResourceCreateOrUpdateRow
 	err := row.Scan(
-		&i.ID,
-		&i.State,
-		&i.Attempt,
-		&i.MaxAttempts,
-		&i.AttemptedAt,
-		&i.CreatedAt,
-		&i.SyncedAt,
-		&i.ObjectID,
-		&i.Kind,
-		&i.Namespace,
-		&i.Object,
-		&i.Hash,
-		&i.Metadata,
-		&i.Tags,
-		&i.Errors,
+		&i.DeltaResource.ID,
+		&i.DeltaResource.State,
+		&i.DeltaResource.Attempt,
+		&i.DeltaResource.MaxAttempts,
+		&i.DeltaResource.AttemptedAt,
+		&i.DeltaResource.CreatedAt,
+		&i.DeltaResource.SyncedAt,
+		&i.DeltaResource.ObjectID,
+		&i.DeltaResource.Kind,
+		&i.DeltaResource.Namespace,
+		&i.DeltaResource.Object,
+		&i.DeltaResource.Hash,
+		&i.DeltaResource.Metadata,
+		&i.DeltaResource.Tags,
+		&i.DeltaResource.Errors,
 		&i.IsInsert,
 	)
 	return &i, err

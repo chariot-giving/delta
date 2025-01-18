@@ -3,6 +3,7 @@ package delta
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/chariot-giving/delta/internal/db/sqlc"
@@ -53,11 +54,11 @@ func (w *controllerInformerScheduler) Work(ctx context.Context, job *river.Job[I
 	}
 
 	for _, informer := range informers {
-		var opts *InformOptions
-		if len(informer.Opts) > 0 {
-			err = json.Unmarshal(informer.Opts, opts)
+		var opts InformOptions
+		if informer.Opts != nil {
+			err = json.Unmarshal(informer.Opts, &opts)
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to unmarshal inform opts: %w", err)
 			}
 		}
 		_, err = riverClient.Insert(ctx, InformArgs{
@@ -65,10 +66,10 @@ func (w *controllerInformerScheduler) Work(ctx context.Context, job *river.Job[I
 			ResourceKind:    informer.ResourceKind,
 			ProcessExisting: informer.ProcessExisting,
 			RunForeground:   informer.RunForeground,
-			Options:         opts,
+			Options:         &opts,
 		}, nil)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to insert inform job: %w", err)
 		}
 	}
 

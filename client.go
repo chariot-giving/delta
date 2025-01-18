@@ -17,7 +17,7 @@ import (
 )
 
 // Config is the configuration for a Client.
-type Config struct {
+type Config[T Object] struct {
 	// ID is the unique identifier for this client. If not set, a random
 	// identifier will be generated.
 	//
@@ -49,7 +49,7 @@ type Config struct {
 	// rather than working them, but if it is configured the client can validate
 	// ahead of time that a controller is properly registered for an inserted resource.
 	// (i.e.  That it wasn't forgotten by accident.)
-	Controllers *Controllers
+	Controllers *Controllers[T]
 
 	// Namespaces is a list of namespaces for this client to operate on along
 	// with configuration for each namespace.
@@ -62,14 +62,14 @@ type Config struct {
 // Client is a single isolated instance of Delta. Your application may use
 // multiple instances operating on different databases or Postgres schemas
 // within a single database.
-type Client struct {
-	config  *Config
+type Client[T Object] struct {
+	config  *Config[T]
 	dbPool  *pgxpool.Pool
 	workers *river.Workers
 	client  *river.Client[pgx.Tx]
 }
 
-func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
+func NewClient[T Object](dbPool *pgxpool.Pool, config Config[T]) (*Client[T], error) {
 	logger := config.Logger
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
@@ -78,7 +78,7 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 	}
 	config.Logger = logger
 
-	c := &Client{
+	c := &Client[T]{
 		config:  &config,
 		dbPool:  dbPool,
 		workers: river.NewWorkers(),
@@ -142,7 +142,7 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 	return c, nil
 }
 
-func (c *Client) Start(ctx context.Context) error {
+func (c *Client[T]) Start(ctx context.Context) error {
 	for namespace, config := range c.config.Namespaces {
 		if err := validateNamespace(namespace); err != nil {
 			return err
@@ -159,12 +159,12 @@ func (c *Client) Start(ctx context.Context) error {
 	return c.client.Start(ctx)
 }
 
-func (c *Client) Stop(ctx context.Context) error {
+func (c *Client[T]) Stop(ctx context.Context) error {
 	return c.client.Stop(ctx)
 }
 
 // Inform the Delta system of an object.
-func (c *Client) Inform(ctx context.Context, object Object, opts *InformOpts) (*deltatype.ObjectInformResult, error) {
+func (c *Client[T]) Inform(ctx context.Context, object T, opts *InformOpts) (*deltatype.ObjectInformResult, error) {
 	tx, err := c.dbPool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -184,7 +184,7 @@ func (c *Client) Inform(ctx context.Context, object Object, opts *InformOpts) (*
 }
 
 // InformTx is the same as Inform but allows you to pass in a transaction.
-func (c *Client) InformTx(ctx context.Context, tx pgx.Tx, object Object, opts *InformOpts) (*deltatype.ObjectInformResult, error) {
+func (c *Client[T]) InformTx(ctx context.Context, tx pgx.Tx, object T, opts *InformOpts) (*deltatype.ObjectInformResult, error) {
 	queries := sqlc.New(tx)
 
 	objectInformOpts := InformOpts{}
@@ -214,7 +214,9 @@ func (c *Client) InformTx(ctx context.Context, tx pgx.Tx, object Object, opts *I
 		return nil, err
 	}
 
-	_, err = c.client.InsertTx(ctx, tx, object, &river.InsertOpts{
+	resourceRow := toResourceRow(&res.DeltaResource)
+
+	_, err = c.client.InsertTx(ctx, tx, resourceRow, &river.InsertOpts{
 		Queue:    "resource",
 		Tags:     objectInformOpts.Tags,
 		Metadata: objectInformOpts.Metadata,
@@ -224,27 +226,13 @@ func (c *Client) InformTx(ctx context.Context, tx pgx.Tx, object Object, opts *I
 	}
 
 	return &deltatype.ObjectInformResult{
-		Resource: &deltatype.ResourceRow{
-			ID:            res.ID,
-			ObjectID:      res.ObjectID,
-			Kind:          res.Kind,
-			Namespace:     res.Namespace,
-			EncodedObject: res.Object,
-			Hash:          res.Hash,
-			Metadata:      res.Metadata,
-			CreatedAt:     res.CreatedAt,
-			SyncedAt:      res.SyncedAt,
-			Attempt:       int(res.Attempt),
-			MaxAttempts:   int(res.MaxAttempts),
-			State:         deltatype.ResourceState(res.State),
-			Tags:          res.Tags,
-		},
+		Resource:      &resourceRow,
 		AlreadyExists: !res.IsInsert,
 	}, nil
 }
 
 // ScheduleInform schedules an inform job for a controller to sync resources.
-func (c *Client) ScheduleInform(ctx context.Context, params ScheduleInformParams, informOpts *InformOptions) error {
+func (c *Client[T]) ScheduleInform(ctx context.Context, params ScheduleInformParams, informOpts *InformOptions) error {
 	queries := sqlc.New(c.dbPool)
 
 	optsBytes, err := json.Marshal(informOpts)

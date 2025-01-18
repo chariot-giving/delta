@@ -79,7 +79,6 @@ CREATE TABLE delta_controller_inform (
 
 -- +goose Down
 DROP TABLE delta_controller_inform;
-DROP TABLE delta_client;
 DROP TABLE delta_resource;
 DROP TABLE delta_namespace;
 DROP TYPE delta_resource_state;

@@ -2,10 +2,10 @@ package delta
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
-	"github.com/chariot-giving/delta/deltatype"
 	"github.com/chariot-giving/delta/internal/db/sqlc"
 	"github.com/chariot-giving/delta/internal/object"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -32,7 +32,7 @@ type Controller[T Object] interface {
 // probably makes sense for most applications because you wouldn't want to start
 // an application with invalid hardcoded runtime configuration. If you want to
 // avoid panics, use AddControllerSafely instead.
-func AddController[T Object](controllers *Controllers, controller Controller[T]) {
+func AddController[T Object](controllers *Controllers[T], controller Controller[T]) {
 	if err := AddControllerSafely[T](controllers, controller); err != nil {
 		panic(err)
 	}
@@ -46,11 +46,11 @@ func AddController[T Object](controllers *Controllers, controller Controller[T])
 // controller for the same type:
 //
 //	delta.AddControllerSafely[User](controllers, &UserController{}).
-func AddControllerSafely[T Object](controllers *Controllers, controller Controller[T]) error {
-	var jobArgs T
+func AddControllerSafely[T Object](controllers *Controllers[T], controller Controller[T]) error {
+	var object T
 	objectWrapper := &objectFactoryWrapper[T]{controller: controller}
 	adapter := &controllerAdapter[T]{controller: controller}
-	return controllers.add(jobArgs, objectWrapper, adapter)
+	return controllers.add(object, objectWrapper, adapter)
 }
 
 // Controllers is a list of available resource controllers. A Controller must be registered for
@@ -58,17 +58,17 @@ func AddControllerSafely[T Object](controllers *Controllers, controller Controll
 //
 // Use the top-level AddController function combined with a Controllers to register a
 // controller.
-type Controllers struct {
-	controllerMap map[string]controllerInfo // resource kind -> controller info
+type Controllers[T Object] struct {
+	controllerMap map[string]controllerInfo[T] // resource kind -> controller info
 	pool          *pgxpool.Pool
 }
 
 // controllerInfo bundles information about a registered controller for later lookup
 // in a Controllers bundle.
-type controllerInfo struct {
+type controllerInfo[T Object] struct {
 	object        Object
 	objectFactory object.ObjectFactory
-	worker        river.Worker[Object]
+	worker        river.Worker[Resource[T]]
 	informer      river.Worker[InformArgs]
 }
 
@@ -76,75 +76,67 @@ type controllerInfo struct {
 //
 // Use the top-level AddController function combined with a Controllers registry to
 // register each available controller.
-func NewControllers(pool *pgxpool.Pool) *Controllers {
-	return &Controllers{
-		controllerMap: make(map[string]controllerInfo),
+func NewControllers[T Object](pool *pgxpool.Pool) *Controllers[T] {
+	return &Controllers[T]{
+		controllerMap: make(map[string]controllerInfo[T]),
 		pool:          pool,
 	}
 }
 
-func (w Controllers) add(object Object, objectFactory object.ObjectFactory, controller controllerInterface) error {
+func (w Controllers[T]) add(object Object, objectFactory object.ObjectFactory, controller controllerInterface[T]) error {
 	kind := object.Kind()
 
 	if _, ok := w.controllerMap[kind]; ok {
 		return fmt.Errorf("controller for kind %q is already registered", kind)
 	}
 
-	w.controllerMap[kind] = controllerInfo{
+	w.controllerMap[kind] = controllerInfo[T]{
 		object:        object,
 		objectFactory: objectFactory,
-		worker: &controllerWorker{
+		worker: &controllerWorker[T]{
 			pool:    w.pool,
 			factory: objectFactory,
 		},
-		informer: &controllerInformer{
+		informer: &controllerInformer[T]{
 			pool:       w.pool,
 			factory:    objectFactory,
 			controller: controller,
 		},
 	}
 
+	// seed the initial controller inform
+	// TODO: update this code based on service restarts
+	queries := sqlc.New(w.pool)
+	_, err := queries.ControllerInformCreate(context.Background(), &sqlc.ControllerInformCreateParams{
+		ResourceKind:    kind,
+		Opts:            json.RawMessage(`{}`),
+		Metadata:        json.RawMessage(`{}`),
+		ProcessExisting: false,
+		RunForeground:   false,
+	})
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
-type controllerWorker struct {
+type controllerWorker[T Object] struct {
 	pool    *pgxpool.Pool
 	factory object.ObjectFactory
-	river.WorkerDefaults[Object]
+	river.WorkerDefaults[Resource[T]]
 }
 
-func (w *controllerWorker) Work(ctx context.Context, job *river.Job[Object]) error {
+func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[T]]) error {
 	queries := sqlc.New(w.pool)
-	resource, err := queries.ResourceUpdateAndGetByObjectIDAndKind(ctx, &sqlc.ResourceUpdateAndGetByObjectIDAndKindParams{
-		ObjectID: job.Args.ID(),
-		Kind:     job.Args.Kind(),
-	})
-	if err != nil {
-		// TODO: wrap error
-		return err
-	}
-	resourceRow := deltatype.ResourceRow{
-		ID:            resource.ID,
-		ObjectID:      resource.ObjectID,
-		Kind:          resource.Kind,
-		Namespace:     resource.Namespace,
-		EncodedObject: resource.Object,
-		Hash:          resource.Hash,
-		Metadata:      resource.Metadata,
-		CreatedAt:     resource.CreatedAt,
-		SyncedAt:      resource.SyncedAt,
-		Attempt:       int(resource.Attempt),
-		MaxAttempts:   int(resource.MaxAttempts),
-		State:         deltatype.ResourceState(resource.State),
-		Tags:          resource.Tags,
-	}
-	object := w.factory.Make(&resourceRow)
+	resource := job.Args
+	object := w.factory.Make(resource.ResourceRow)
 	if err := object.UnmarshalResource(); err != nil {
 		return fmt.Errorf("failed to unmarshal resource: %w", err)
 	}
 
 	// do the work!
-	err = object.Work(ctx)
+	err := object.Work(ctx)
 	if err != nil {
 		state := sqlc.DeltaResourceStateFailed
 		if job.Attempt >= job.MaxAttempts {

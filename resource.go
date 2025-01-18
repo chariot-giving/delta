@@ -1,6 +1,10 @@
 package delta
 
-import "github.com/chariot-giving/delta/deltatype"
+import (
+	"fmt"
+
+	"github.com/chariot-giving/delta/deltatype"
+)
 
 // Resource represents a single object, holding both the object and
 // information for a resource with object of type T.
@@ -9,6 +13,10 @@ type Resource[T Object] struct {
 
 	// Object is the object for the resource.
 	Object T
+}
+
+func (r Resource[T]) Kind() string {
+	return fmt.Sprintf("delta.resource.%s", r.Object.Kind())
 }
 
 // Object is an interface that represents the objects for a resource of type T.
