@@ -23,7 +23,8 @@ func main() {
 	}
 
 	controllers := delta.NewControllers(db)
-	delta.AddController(controllers, &simpleController{})
+	delta.AddController(controllers, &emailController{})
+	delta.AddController(controllers, &mailController{})
 	deltaClient, err := delta.NewClient(db, delta.Config{
 		Controllers: controllers,
 	})
@@ -81,28 +82,73 @@ func (e Email) Kind() string {
 	return "email"
 }
 
-type simpleController struct {
+type emailController struct {
 }
 
-func (c *simpleController) Work(ctx context.Context, resource *delta.Resource[Email]) error {
-	log.Println("Work called")
+func (c *emailController) Work(ctx context.Context, resource *delta.Resource[Email]) error {
 	log.Printf("Processing email: %+v", resource.Object.ID())
 	<-time.After(5 * time.Second)
 	log.Println("Finished processing email")
 	return nil
 }
 
-func (c *simpleController) Inform(ctx context.Context, opts *delta.InformOptions) (<-chan Email, error) {
-	log.Println("Inform called")
+func (c *emailController) Inform(ctx context.Context, opts *delta.InformOptions) (<-chan Email, error) {
 	queue := make(chan Email)
 	go func() {
 		defer close(queue)
-		log.Println("Informing email")
+		log.Println("Informing emails...")
 		queue <- Email{
 			InboxId: "123",
-			To:      "test@test.com",
+			To:      "max@test.com",
 			From:    "test@test.com",
-			Body:    "test",
+			Body:    "hi max",
+		}
+		queue <- Email{
+			InboxId: "456",
+			To:      "matt@test.com",
+			From:    "test@test.com",
+			Body:    "hi matt",
+		}
+		log.Println("Informed emails")
+	}()
+	return queue, nil
+}
+
+type Mail struct {
+	ItemID string
+	From   string
+	To     string
+	Body   string
+}
+
+func (m Mail) ID() string {
+	return m.ItemID
+}
+
+func (m Mail) Kind() string {
+	return "mail"
+}
+
+type mailController struct {
+}
+
+func (c *mailController) Work(ctx context.Context, resource *delta.Resource[Mail]) error {
+	log.Printf("Processing mail: %+v", resource.Object.ID())
+	<-time.After(5 * time.Second)
+	log.Println("Finished processing mail")
+	return nil
+}
+
+func (c *mailController) Inform(ctx context.Context, opts *delta.InformOptions) (<-chan Mail, error) {
+	queue := make(chan Mail)
+	go func() {
+		defer close(queue)
+		log.Println("Informing mails...")
+		queue <- Mail{
+			ItemID: "abc",
+			From:   "Test Service, Inc.",
+			To:     "Matthew Magaldi",
+			Body:   "dear matt",
 		}
 	}()
 	return queue, nil

@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/chariot-giving/delta/deltatype"
@@ -116,7 +115,6 @@ func (w *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformA
 
 	var numResources int64
 
-	log.Println("Starting Inform")
 	queue, err := w.controller.Inform(ctx, &informOpts)
 	if err != nil {
 		return fmt.Errorf("failed to inform controller: %w", err)
@@ -126,7 +124,6 @@ func (w *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformA
 		select {
 		case obj, ok := <-queue:
 			if !ok {
-				log.Println("Inform finished")
 				// happy path: successfully informed all resources
 				// this is to keep track of the last successful inform time
 				// so that we can filter resources that have changed since then
@@ -141,7 +138,6 @@ func (w *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformA
 				return nil
 			}
 			numResources++
-			log.Printf("Processing object: %v", obj)
 			if err := w.processObject(ctx, obj, &job.Args); err != nil {
 				return err
 			}

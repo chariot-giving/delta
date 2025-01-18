@@ -78,6 +78,9 @@ func (w *controllerInformerScheduler) Work(ctx context.Context, job *river.Job[I
 	return nil
 }
 
+// kindObject is a simple struct that implements the Object interface
+// this is a hacky way to trick River into inserting a specific job
+// based on the resource kind.
 type kindObject struct {
 	kind string
 }
