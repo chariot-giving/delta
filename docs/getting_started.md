@@ -31,6 +31,12 @@ goose status
 > Note that multiple Delta clients can share the same database and schema even if those
 > clients are configured to manage different resources with different controllers.
 
+Next, we need to initialize the River schemas in the same Delta database & schema.
+
+```bash
+river migrate-up --database-url $GOOSE_DBSTRING
+```
+
 ## Resource Objects and Controllers
 
 Each kind of managed resource in Delta requires two types: an `Object` struct

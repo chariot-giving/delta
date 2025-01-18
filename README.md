@@ -78,7 +78,8 @@ func (c *UserController) Work(ctx context.Context, resource *delta.Resource[User
 }
 
 // Inform pushes resources into a channel for processing.
-func (c *UserController) Inform(ctx context.Context, queue chan User, opts *InformOptions) error {
+func (c *UserController) Inform(ctx context.Context, opts *delta.InformOptions) (<-chan User, error) {
+    userChan := make(chan User)
     resp, _ := http.DefaultClient.Get("https://api.example.com/users", nil)
     defer resp.Body.Close()
 
@@ -88,6 +89,7 @@ func (c *UserController) Inform(ctx context.Context, queue chan User, opts *Info
     }
 
     go func() {
+        defer close(userChan)
         for _, user := range users {
             if !c.Match(&user) {
                 continue
@@ -95,12 +97,12 @@ func (c *UserController) Inform(ctx context.Context, queue chan User, opts *Info
             select {
             case <-ctx.Done():
                 return ctx.Err()
-            case queue <- user:
+            case userChan <- user:
             }
         }
     }()
 
-    return nil
+    return userChan, nil
 }
 ```
 
