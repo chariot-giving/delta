@@ -61,12 +61,14 @@ func (w *controllerInformerScheduler) Work(ctx context.Context, job *river.Job[I
 				return fmt.Errorf("failed to unmarshal inform opts: %w", err)
 			}
 		}
-		_, err = riverClient.Insert(ctx, InformArgs{
+
+		_, err = riverClient.Insert(ctx, InformArgs[kindObject]{
 			ID:              informer.ID,
 			ResourceKind:    informer.ResourceKind,
 			ProcessExisting: informer.ProcessExisting,
 			RunForeground:   informer.RunForeground,
 			Options:         &opts,
+			object:          kindObject{kind: informer.ResourceKind},
 		}, nil)
 		if err != nil {
 			return fmt.Errorf("failed to insert inform job: %w", err)
@@ -74,4 +76,16 @@ func (w *controllerInformerScheduler) Work(ctx context.Context, job *river.Job[I
 	}
 
 	return nil
+}
+
+type kindObject struct {
+	kind string
+}
+
+func (k kindObject) Kind() string {
+	return k.kind
+}
+
+func (k kindObject) ID() string {
+	return k.kind
 }

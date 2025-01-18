@@ -3,6 +3,7 @@ package delta
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 
 	"github.com/chariot-giving/delta/deltatype"
 	"github.com/chariot-giving/delta/internal/object"
@@ -35,6 +36,17 @@ func (w *wrapperObject[T]) UnmarshalResource() error {
 	}
 
 	return json.Unmarshal(w.resource.EncodedObject, &w.resource.Object)
+}
+
+// Compare implements Object.Compare.
+func (w *wrapperObject[T]) Compare(other any) (int, bool) {
+	if comparable, ok := other.(ComparableObject); ok {
+		if reflect.TypeOf(other) == reflect.TypeOf(w.resource.Object) {
+			return comparable.Compare(w.resource.Object), true
+		}
+	}
+
+	return 0, false
 }
 
 // Work implements Object.Work.

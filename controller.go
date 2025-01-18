@@ -32,7 +32,7 @@ type Controller[T Object] interface {
 // probably makes sense for most applications because you wouldn't want to start
 // an application with invalid hardcoded runtime configuration. If you want to
 // avoid panics, use AddControllerSafely instead.
-func AddController[T Object](controllers *Controllers[T], controller Controller[T]) {
+func AddController[T Object](controllers *Controllers, controller Controller[T]) {
 	if err := AddControllerSafely[T](controllers, controller); err != nil {
 		panic(err)
 	}
@@ -46,11 +46,23 @@ func AddController[T Object](controllers *Controllers[T], controller Controller[
 // controller for the same type:
 //
 //	delta.AddControllerSafely[User](controllers, &UserController{}).
-func AddControllerSafely[T Object](controllers *Controllers[T], controller Controller[T]) error {
+func AddControllerSafely[T Object](controllers *Controllers, controller Controller[T]) error {
 	var object T
 	objectWrapper := &objectFactoryWrapper[T]{controller: controller}
-	adapter := &controllerAdapter[T]{controller: controller}
-	return controllers.add(object, objectWrapper, adapter)
+	controllerWorker := &controllerWorker[T]{
+		pool:    controllers.pool,
+		factory: objectWrapper,
+	}
+	controllerInformer := &controllerInformer[T]{
+		pool:       controllers.pool,
+		factory:    objectWrapper,
+		controller: controller,
+	}
+	workConfigurer := &workConfigurer[T]{
+		worker:   controllerWorker,
+		informer: controllerInformer,
+	}
+	return controllers.add(object, workConfigurer)
 }
 
 // Controllers is a list of available resource controllers. A Controller must be registered for
@@ -58,50 +70,39 @@ func AddControllerSafely[T Object](controllers *Controllers[T], controller Contr
 //
 // Use the top-level AddController function combined with a Controllers to register a
 // controller.
-type Controllers[T Object] struct {
-	controllerMap map[string]controllerInfo[T] // resource kind -> controller info
+type Controllers struct {
+	controllerMap map[string]controllerInfo // resource kind -> controller info
 	pool          *pgxpool.Pool
 }
 
 // controllerInfo bundles information about a registered controller for later lookup
 // in a Controllers bundle.
-type controllerInfo[T Object] struct {
-	object        Object
-	objectFactory object.ObjectFactory
-	worker        river.Worker[Resource[T]]
-	informer      river.Worker[InformArgs]
+type controllerInfo struct {
+	object         Object
+	workConfigurer workConfigurerInterface
 }
 
 // NewControllers initializes a new registry of available resource controllers.
 //
 // Use the top-level AddController function combined with a Controllers registry to
 // register each available controller.
-func NewControllers[T Object](pool *pgxpool.Pool) *Controllers[T] {
-	return &Controllers[T]{
-		controllerMap: make(map[string]controllerInfo[T]),
+func NewControllers(pool *pgxpool.Pool) *Controllers {
+	return &Controllers{
+		controllerMap: make(map[string]controllerInfo),
 		pool:          pool,
 	}
 }
 
-func (w Controllers[T]) add(object Object, objectFactory object.ObjectFactory, controller controllerInterface[T]) error {
+func (w Controllers) add(object Object, workConfigurer workConfigurerInterface) error {
 	kind := object.Kind()
 
 	if _, ok := w.controllerMap[kind]; ok {
 		return fmt.Errorf("controller for kind %q is already registered", kind)
 	}
 
-	w.controllerMap[kind] = controllerInfo[T]{
-		object:        object,
-		objectFactory: objectFactory,
-		worker: &controllerWorker[T]{
-			pool:    w.pool,
-			factory: objectFactory,
-		},
-		informer: &controllerInformer[T]{
-			pool:       w.pool,
-			factory:    objectFactory,
-			controller: controller,
-		},
+	w.controllerMap[kind] = controllerInfo{
+		object:         object,
+		workConfigurer: workConfigurer,
 	}
 
 	// seed the initial controller inform

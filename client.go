@@ -17,7 +17,7 @@ import (
 )
 
 // Config is the configuration for a Client.
-type Config[T Object] struct {
+type Config struct {
 	// ID is the unique identifier for this client. If not set, a random
 	// identifier will be generated.
 	//
@@ -49,7 +49,7 @@ type Config[T Object] struct {
 	// rather than working them, but if it is configured the client can validate
 	// ahead of time that a controller is properly registered for an inserted resource.
 	// (i.e.  That it wasn't forgotten by accident.)
-	Controllers *Controllers[T]
+	Controllers *Controllers
 
 	// Namespaces is a list of namespaces for this client to operate on along
 	// with configuration for each namespace.
@@ -62,14 +62,14 @@ type Config[T Object] struct {
 // Client is a single isolated instance of Delta. Your application may use
 // multiple instances operating on different databases or Postgres schemas
 // within a single database.
-type Client[T Object] struct {
-	config  *Config[T]
+type Client struct {
+	config  *Config
 	dbPool  *pgxpool.Pool
 	workers *river.Workers
 	client  *river.Client[pgx.Tx]
 }
 
-func NewClient[T Object](dbPool *pgxpool.Pool, config Config[T]) (*Client[T], error) {
+func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 	logger := config.Logger
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
@@ -78,7 +78,7 @@ func NewClient[T Object](dbPool *pgxpool.Pool, config Config[T]) (*Client[T], er
 	}
 	config.Logger = logger
 
-	c := &Client[T]{
+	c := &Client{
 		config:  &config,
 		dbPool:  dbPool,
 		workers: river.NewWorkers(),
@@ -86,12 +86,7 @@ func NewClient[T Object](dbPool *pgxpool.Pool, config Config[T]) (*Client[T], er
 
 	// Add controller workers to river workers
 	for _, controller := range config.Controllers.controllerMap {
-		river.AddWorker(c.workers, controller.worker)
-	}
-
-	// Add controller informers to river workers
-	for _, controller := range config.Controllers.controllerMap {
-		river.AddWorker(c.workers, controller.informer)
+		controller.workConfigurer.Configure(c.workers)
 	}
 
 	// add generic informer delegator/scheduler
@@ -142,7 +137,7 @@ func NewClient[T Object](dbPool *pgxpool.Pool, config Config[T]) (*Client[T], er
 	return c, nil
 }
 
-func (c *Client[T]) Start(ctx context.Context) error {
+func (c *Client) Start(ctx context.Context) error {
 	for namespace, config := range c.config.Namespaces {
 		if err := validateNamespace(namespace); err != nil {
 			return err
@@ -159,12 +154,12 @@ func (c *Client[T]) Start(ctx context.Context) error {
 	return c.client.Start(ctx)
 }
 
-func (c *Client[T]) Stop(ctx context.Context) error {
+func (c *Client) Stop(ctx context.Context) error {
 	return c.client.Stop(ctx)
 }
 
 // Inform the Delta system of an object.
-func (c *Client[T]) Inform(ctx context.Context, object T, opts *InformOpts) (*deltatype.ObjectInformResult, error) {
+func (c *Client) Inform(ctx context.Context, object Object, opts *InformOpts) (*deltatype.ObjectInformResult, error) {
 	tx, err := c.dbPool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -184,7 +179,7 @@ func (c *Client[T]) Inform(ctx context.Context, object T, opts *InformOpts) (*de
 }
 
 // InformTx is the same as Inform but allows you to pass in a transaction.
-func (c *Client[T]) InformTx(ctx context.Context, tx pgx.Tx, object T, opts *InformOpts) (*deltatype.ObjectInformResult, error) {
+func (c *Client) InformTx(ctx context.Context, tx pgx.Tx, object Object, opts *InformOpts) (*deltatype.ObjectInformResult, error) {
 	queries := sqlc.New(tx)
 
 	objectInformOpts := InformOpts{}
@@ -232,7 +227,7 @@ func (c *Client[T]) InformTx(ctx context.Context, tx pgx.Tx, object T, opts *Inf
 }
 
 // ScheduleInform schedules an inform job for a controller to sync resources.
-func (c *Client[T]) ScheduleInform(ctx context.Context, params ScheduleInformParams, informOpts *InformOptions) error {
+func (c *Client) ScheduleInform(ctx context.Context, params ScheduleInformParams, informOpts *InformOptions) error {
 	queries := sqlc.New(c.dbPool)
 
 	optsBytes, err := json.Marshal(informOpts)

@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"reflect"
 	"time"
 
 	"github.com/chariot-giving/delta/deltatype"
@@ -41,7 +40,7 @@ type Informer[T Object] interface {
 	Inform(ctx context.Context, opts *InformOptions) (<-chan T, error)
 }
 
-type InformArgs struct {
+type InformArgs[T Object] struct {
 	// The ID of the controller inform record
 	ID int32
 	// ResourceKind is the kind of resource to inform
@@ -57,13 +56,15 @@ type InformArgs struct {
 	RunForeground bool
 	// Options are optional settings for filtering resources during inform.
 	Options *InformOptions
+	// Object is the resource to inform
+	object T
 }
 
-func (i InformArgs) Kind() string {
-	return "delta.controller.inform"
+func (i InformArgs[T]) Kind() string {
+	return fmt.Sprintf("delta.inform.%s", i.object.Kind())
 }
 
-func (i InformArgs) InsertOpts() river.InsertOpts {
+func (i InformArgs[T]) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
 		MaxAttempts: 10,
 		Queue:       "controller",
@@ -79,11 +80,11 @@ func (i InformArgs) InsertOpts() river.InsertOpts {
 type controllerInformer[T Object] struct {
 	pool       *pgxpool.Pool
 	factory    object.ObjectFactory
-	controller controllerInterface[T]
-	river.WorkerDefaults[InformArgs]
+	controller Controller[T]
+	river.WorkerDefaults[InformArgs[T]]
 }
 
-func (w *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformArgs]) error {
+func (w *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformArgs[T]]) error {
 	queries := sqlc.New(w.pool)
 
 	inform, err := queries.ControllerInformGet(ctx, job.Args.ID)
@@ -150,14 +151,14 @@ func (w *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformA
 	}
 }
 
-func (w *controllerInformer[T]) Timeout(job *river.Job[InformArgs]) time.Duration {
+func (w *controllerInformer[T]) Timeout(job *river.Job[InformArgs[T]]) time.Duration {
 	if job.Args.ProcessExisting {
 		return 5 * time.Minute
 	}
 	return 1 * time.Minute
 }
 
-func (w *controllerInformer[T]) processObject(ctx context.Context, obj Object, args *InformArgs) error {
+func (w *controllerInformer[T]) processObject(ctx context.Context, object T, args *InformArgs[T]) error {
 	riverClient, err := river.ClientFromContextSafely[pgx.Tx](ctx)
 	if err != nil {
 		return err
@@ -172,13 +173,13 @@ func (w *controllerInformer[T]) processObject(ctx context.Context, obj Object, a
 	queries := sqlc.New(tx)
 
 	resource, err := queries.ResourceGetByObjectIDAndKind(ctx, &sqlc.ResourceGetByObjectIDAndKindParams{
-		ObjectID: obj.ID(),
-		Kind:     obj.Kind(),
+		ObjectID: object.ID(),
+		Kind:     object.Kind(),
 	})
 	if err != nil {
 		if pgx.ErrNoRows == err {
 			objectInformOpts := InformOpts{}
-			if objectWithOpts, ok := Object(obj).(ObjectWithInformOpts); ok {
+			if objectWithOpts, ok := Object(object).(ObjectWithInformOpts); ok {
 				objectInformOpts = objectWithOpts.InformOpts()
 			}
 
@@ -192,15 +193,15 @@ func (w *controllerInformer[T]) processObject(ctx context.Context, obj Object, a
 				objectInformOpts.Tags = []string{}
 			}
 
-			objBytes, err := json.Marshal(obj)
+			objBytes, err := json.Marshal(object)
 			if err != nil {
 				return err
 			}
 			hash := sha256.Sum256(objBytes)
 
 			res, err := queries.ResourceCreateOrUpdate(ctx, &sqlc.ResourceCreateOrUpdateParams{
-				ObjectID:    obj.ID(),
-				Kind:        obj.Kind(),
+				ObjectID:    object.ID(),
+				Kind:        object.Kind(),
 				Namespace:   namespace,
 				State:       sqlc.DeltaResourceStateScheduled,
 				Object:      objBytes,
@@ -215,11 +216,10 @@ func (w *controllerInformer[T]) processObject(ctx context.Context, obj Object, a
 
 			if res.IsInsert {
 				resourceRow := toResourceRow(&res.DeltaResource)
-				// and then enqueue a river job
-				_, err = riverClient.InsertTx(ctx, tx, Resource[T]{ResourceRow: &resourceRow, Object: obj.(T)}, &river.InsertOpts{
+				_, err = riverClient.InsertTx(ctx, tx, Resource[T]{Object: object, ResourceRow: &resourceRow}, &river.InsertOpts{
 					Queue:    "resource",
-					Tags:     objectInformOpts.Tags,
-					Metadata: objectInformOpts.Metadata,
+					Tags:     resourceRow.Tags,
+					Metadata: resourceRow.Metadata,
 				})
 				if err != nil {
 					return err
@@ -234,7 +234,7 @@ func (w *controllerInformer[T]) processObject(ctx context.Context, obj Object, a
 	}
 
 	// comparison
-	compare, err := w.compareObjects(obj, toResourceRow(resource))
+	compare, err := w.compareObjects(object, toResourceRow(resource))
 	if err != nil {
 		return err
 	}
@@ -256,7 +256,7 @@ func (w *controllerInformer[T]) processObject(ctx context.Context, obj Object, a
 	}
 
 	resourceRow := toResourceRow(updated)
-	_, err = riverClient.InsertTx(ctx, tx, resourceRow, &river.InsertOpts{
+	_, err = riverClient.InsertTx(ctx, tx, Resource[T]{Object: object, ResourceRow: &resourceRow}, &river.InsertOpts{
 		Queue:    "resource",
 		Tags:     resourceRow.Tags,
 		Metadata: resourceRow.Metadata,
@@ -268,20 +268,14 @@ func (w *controllerInformer[T]) processObject(ctx context.Context, obj Object, a
 	return tx.Commit(ctx)
 }
 
-func (w *controllerInformer[T]) compareObjects(object Object, resource deltatype.ResourceRow) (int, error) {
+func (w *controllerInformer[T]) compareObjects(object T, resource deltatype.ResourceRow) (int, error) {
 	resourceObject := w.factory.Make(&resource)
 	if err := resourceObject.UnmarshalResource(); err != nil {
 		return 0, fmt.Errorf("failed to unmarshal resource: %w", err)
 	}
-	// ugly but it should work?
-	if comparable, ok := any(object).(ComparableObject); ok {
-		// TODO: not sure this un-generic cast works
-		if wrappedObj, ok := resourceObject.(*wrapperObject[Object]); ok {
-			// Add type check to ensure objects are of the same concrete type
-			if reflect.TypeOf(object) == reflect.TypeOf(wrappedObj.resource.Object) {
-				return comparable.Compare(wrappedObj.resource.Object), nil
-			}
-		}
+
+	if compare, ok := resourceObject.Compare(object); ok {
+		return compare, nil
 	}
 
 	// check hash

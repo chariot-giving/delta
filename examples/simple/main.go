@@ -22,9 +22,9 @@ func main() {
 		log.Fatal(err)
 	}
 
-	controllers := delta.NewControllers[Email](db)
+	controllers := delta.NewControllers(db)
 	delta.AddController(controllers, &simpleController{})
-	deltaClient, err := delta.NewClient[Email](db, delta.Config[Email]{
+	deltaClient, err := delta.NewClient(db, delta.Config{
 		Controllers: controllers,
 	})
 	if err != nil {

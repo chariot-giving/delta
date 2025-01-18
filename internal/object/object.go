@@ -15,6 +15,7 @@ import (
 // Implemented by delta.wrapperObject.
 type Object interface {
 	UnmarshalResource() error
+	Compare(other any) (int, bool)
 	Work(ctx context.Context) error
 }
 
