@@ -40,13 +40,14 @@ SET state = CASE
 WHERE id = @id
 RETURNING *;
 -- name: ResourceCreateOrUpdate :one
-INSERT INTO delta_resource (object_id, kind, namespace, state, created_at, object, metadata, tags, hash)
-VALUES ($1, $2, $3, $4, NOW(), $5, $6, $7, $8)
+INSERT INTO delta_resource (object_id, kind, namespace, state, created_at, object, metadata, tags, hash, max_attempts)
+VALUES ($1, $2, $3, $4, NOW(), $5, $6, $7, $8, $9)
 ON CONFLICT (object_id, kind) DO UPDATE
 SET state = $4,
     object = $5,
     metadata = $6,
     tags = $7,
-    hash = $8
-RETURNING *, 
+    hash = $8,
+    max_attempts = $9
+RETURNING sqlc.embed(delta_resource), 
     (xmax = 0) as is_insert;

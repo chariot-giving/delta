@@ -2,10 +2,10 @@ package delta
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
-	"github.com/chariot-giving/delta/deltatype"
 	"github.com/chariot-giving/delta/internal/db/sqlc"
 	"github.com/chariot-giving/delta/internal/object"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -47,10 +47,22 @@ func AddController[T Object](controllers *Controllers, controller Controller[T])
 //
 //	delta.AddControllerSafely[User](controllers, &UserController{}).
 func AddControllerSafely[T Object](controllers *Controllers, controller Controller[T]) error {
-	var jobArgs T
+	var object T
 	objectWrapper := &objectFactoryWrapper[T]{controller: controller}
-	adapter := &controllerAdapter[T]{controller: controller}
-	return controllers.add(jobArgs, objectWrapper, adapter)
+	controllerWorker := &controllerWorker[T]{
+		pool:    controllers.pool,
+		factory: objectWrapper,
+	}
+	controllerInformer := &controllerInformer[T]{
+		pool:       controllers.pool,
+		factory:    objectWrapper,
+		controller: controller,
+	}
+	workConfigurer := &workConfigurer[T]{
+		worker:   controllerWorker,
+		informer: controllerInformer,
+	}
+	return controllers.add(object, workConfigurer)
 }
 
 // Controllers is a list of available resource controllers. A Controller must be registered for
@@ -66,10 +78,8 @@ type Controllers struct {
 // controllerInfo bundles information about a registered controller for later lookup
 // in a Controllers bundle.
 type controllerInfo struct {
-	object        Object
-	objectFactory object.ObjectFactory
-	worker        river.Worker[Object]
-	informer      river.Worker[InformArgs]
+	object         Object
+	workConfigurer workConfigurerInterface
 }
 
 // NewControllers initializes a new registry of available resource controllers.
@@ -83,7 +93,7 @@ func NewControllers(pool *pgxpool.Pool) *Controllers {
 	}
 }
 
-func (w Controllers) add(object Object, objectFactory object.ObjectFactory, controller controllerInterface) error {
+func (w Controllers) add(object Object, workConfigurer workConfigurerInterface) error {
 	kind := object.Kind()
 
 	if _, ok := w.controllerMap[kind]; ok {
@@ -91,60 +101,43 @@ func (w Controllers) add(object Object, objectFactory object.ObjectFactory, cont
 	}
 
 	w.controllerMap[kind] = controllerInfo{
-		object:        object,
-		objectFactory: objectFactory,
-		worker: &controllerWorker{
-			pool:    w.pool,
-			factory: objectFactory,
-		},
-		informer: &controllerInformer{
-			pool:       w.pool,
-			factory:    objectFactory,
-			controller: controller,
-		},
+		object:         object,
+		workConfigurer: workConfigurer,
+	}
+
+	// seed the initial controller inform
+	// TODO: update this code based on service restarts
+	queries := sqlc.New(w.pool)
+	_, err := queries.ControllerInformCreate(context.Background(), &sqlc.ControllerInformCreateParams{
+		ResourceKind:    kind,
+		Opts:            json.RawMessage(`{}`),
+		Metadata:        json.RawMessage(`{}`),
+		ProcessExisting: false,
+		RunForeground:   false,
+	})
+	if err != nil {
+		return err
 	}
 
 	return nil
 }
 
-type controllerWorker struct {
+type controllerWorker[T Object] struct {
 	pool    *pgxpool.Pool
 	factory object.ObjectFactory
-	river.WorkerDefaults[Object]
+	river.WorkerDefaults[Resource[T]]
 }
 
-func (w *controllerWorker) Work(ctx context.Context, job *river.Job[Object]) error {
+func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[T]]) error {
 	queries := sqlc.New(w.pool)
-	resource, err := queries.ResourceUpdateAndGetByObjectIDAndKind(ctx, &sqlc.ResourceUpdateAndGetByObjectIDAndKindParams{
-		ObjectID: job.Args.ID(),
-		Kind:     job.Args.Kind(),
-	})
-	if err != nil {
-		// TODO: wrap error
-		return err
-	}
-	resourceRow := deltatype.ResourceRow{
-		ID:            resource.ID,
-		ObjectID:      resource.ObjectID,
-		Kind:          resource.Kind,
-		Namespace:     resource.Namespace,
-		EncodedObject: resource.Object,
-		Hash:          resource.Hash,
-		Metadata:      resource.Metadata,
-		CreatedAt:     resource.CreatedAt,
-		SyncedAt:      resource.SyncedAt,
-		Attempt:       int(resource.Attempt),
-		MaxAttempts:   int(resource.MaxAttempts),
-		State:         deltatype.ResourceState(resource.State),
-		Tags:          resource.Tags,
-	}
-	object := w.factory.Make(&resourceRow)
+	resource := job.Args
+	object := w.factory.Make(resource.ResourceRow)
 	if err := object.UnmarshalResource(); err != nil {
 		return fmt.Errorf("failed to unmarshal resource: %w", err)
 	}
 
 	// do the work!
-	err = object.Work(ctx)
+	err := object.Work(ctx)
 	if err != nil {
 		state := sqlc.DeltaResourceStateFailed
 		if job.Attempt >= job.MaxAttempts {

@@ -86,12 +86,7 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 
 	// Add controller workers to river workers
 	for _, controller := range config.Controllers.controllerMap {
-		river.AddWorker(c.workers, controller.worker)
-	}
-
-	// Add controller informers to river workers
-	for _, controller := range config.Controllers.controllerMap {
-		river.AddWorker(c.workers, controller.informer)
+		controller.workConfigurer.Configure(c.workers)
 	}
 
 	// add generic informer delegator/scheduler
@@ -214,7 +209,9 @@ func (c *Client) InformTx(ctx context.Context, tx pgx.Tx, object Object, opts *I
 		return nil, err
 	}
 
-	_, err = c.client.InsertTx(ctx, tx, object, &river.InsertOpts{
+	resourceRow := toResourceRow(&res.DeltaResource)
+
+	_, err = c.client.InsertTx(ctx, tx, resourceRow, &river.InsertOpts{
 		Queue:    "resource",
 		Tags:     objectInformOpts.Tags,
 		Metadata: objectInformOpts.Metadata,
@@ -224,21 +221,7 @@ func (c *Client) InformTx(ctx context.Context, tx pgx.Tx, object Object, opts *I
 	}
 
 	return &deltatype.ObjectInformResult{
-		Resource: &deltatype.ResourceRow{
-			ID:            res.ID,
-			ObjectID:      res.ObjectID,
-			Kind:          res.Kind,
-			Namespace:     res.Namespace,
-			EncodedObject: res.Object,
-			Hash:          res.Hash,
-			Metadata:      res.Metadata,
-			CreatedAt:     res.CreatedAt,
-			SyncedAt:      res.SyncedAt,
-			Attempt:       int(res.Attempt),
-			MaxAttempts:   int(res.MaxAttempts),
-			State:         deltatype.ResourceState(res.State),
-			Tags:          res.Tags,
-		},
+		Resource:      &resourceRow,
 		AlreadyExists: !res.IsInsert,
 	}, nil
 }

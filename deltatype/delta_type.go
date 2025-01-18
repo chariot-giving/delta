@@ -1,6 +1,7 @@
 package deltatype
 
 import (
+	"fmt"
 	"time"
 )
 
@@ -33,10 +34,10 @@ type ResourceRow struct {
 	// `Object` at insertion time.
 	ObjectID string
 
-	// Kind uniquely identifies the type of resource and instructs which controller
+	// ObjectKind uniquely identifies the type of resource and instructs which controller
 	// should work it. It is set at insertion time via `Kind()` on the
 	// `Object`.
-	Kind string
+	ObjectKind string
 
 	// Namespace is the namespace of the resource.
 	// Namespaces can be configured independently and be used to isolate resources.
@@ -83,6 +84,10 @@ type ResourceRow struct {
 	// Errors is a set of errors that occurred when the resource was worked, one for
 	// each attempt. Ordered from earliest error to the latest error.
 	Errors []AttemptError
+}
+
+func (r ResourceRow) Kind() string {
+	return fmt.Sprintf("delta.resource.%s", r.ObjectKind)
 }
 
 type ResourceState string

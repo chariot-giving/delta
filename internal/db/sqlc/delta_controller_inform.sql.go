@@ -120,11 +120,31 @@ func (q *Queries) ControllerInformReadyList(ctx context.Context, informInterval 
 }
 
 const controllerInformSetInformed = `-- name: ControllerInformSetInformed :exec
+WITH copied_record AS (
+    INSERT INTO delta_controller_inform (
+        resource_kind,
+        process_existing,
+        run_foreground,
+        opts,
+        metadata,
+        last_inform_time
+    )
+    SELECT 
+        resource_kind,
+        process_existing,
+        run_foreground,
+        opts,
+        metadata,
+        last_inform_time
+    FROM delta_controller_inform
+    WHERE id = $2
+    RETURNING delta_controller_inform.id
+)
 UPDATE delta_controller_inform
 SET 
     last_inform_time = now(),
     num_resources = $1
-WHERE id = $2
+WHERE delta_controller_inform.id = $2
 `
 
 type ControllerInformSetInformedParams struct {

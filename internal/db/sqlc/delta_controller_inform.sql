@@ -26,11 +26,31 @@ ORDER BY last_inform_time ASC;
 
 -- name: ControllerInformSetInformed :exec
 -- Used by the actual controller informer to set the last_inform_time and num_resources
+WITH copied_record AS (
+    INSERT INTO delta_controller_inform (
+        resource_kind,
+        process_existing,
+        run_foreground,
+        opts,
+        metadata,
+        last_inform_time
+    )
+    SELECT 
+        resource_kind,
+        process_existing,
+        run_foreground,
+        opts,
+        metadata,
+        last_inform_time
+    FROM delta_controller_inform
+    WHERE id = @id
+    RETURNING delta_controller_inform.id
+)
 UPDATE delta_controller_inform
 SET 
     last_inform_time = now(),
     num_resources = @num_resources
-WHERE id = @id;
+WHERE delta_controller_inform.id = @id;
 
 -- name: ControllerInformGet :one
 SELECT * FROM delta_controller_inform

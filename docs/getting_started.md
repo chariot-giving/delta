@@ -22,10 +22,10 @@ It relies on [goose](https://github.com/pressly/goose) to run migrations.
 
 ```bash
 GOOSE_DRIVER=postgres
-GOOSE_DBSTRING=postgres://chariot:password@localhost:5432/chariot?search_path=delta
+GOOSE_DBSTRING=postgres://delta:password@localhost:5431/delta?search_path=delta
 GOOSE_MIGRATION_DIR=./internal/db/migrations
-goose status
 goose up
+goose status
 ```
 
 > Note that multiple Delta clients can share the same database and schema even if those
