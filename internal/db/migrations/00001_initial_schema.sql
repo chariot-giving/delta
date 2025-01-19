@@ -65,20 +65,17 @@ CREATE INDEX delta_resource_object_id ON delta_resource USING btree(object_id);
 CREATE INDEX delta_resource_object_index ON delta_resource USING GIN(object);
 CREATE INDEX delta_resource_metadata_index ON delta_resource USING GIN(metadata);
 
-CREATE TABLE delta_controller_inform (
-    id SERIAL PRIMARY KEY,
-    resource_kind TEXT NOT NULL,
-    last_inform_time TIMESTAMPTZ,
-    process_existing boolean NOT NULL DEFAULT false,
-    run_foreground boolean NOT NULL DEFAULT false,
-    num_resources bigint NOT NULL DEFAULT 0,
-    opts jsonb NOT NULL DEFAULT '{}',
+CREATE TABLE delta_controller (
+    name text PRIMARY KEY NOT NULL,
+    last_inform_time TIMESTAMPTZ NOT NULL DEFAULT '1970-01-01 00:00:00Z',
     metadata jsonb NOT NULL DEFAULT '{}',
-    CONSTRAINT kind_length CHECK (char_length(resource_kind) > 0 AND char_length(resource_kind) < 128)
+    created_at timestamptz NOT NULL DEFAULT NOW(),
+    updated_at timestamptz NOT NULL,
+    CONSTRAINT name_length CHECK (char_length(name) > 0 AND char_length(name) < 128)
 );
 
 -- +goose Down
-DROP TABLE delta_controller_inform;
+DROP TABLE delta_controller;
 DROP TABLE delta_resource;
 DROP TABLE delta_namespace;
 DROP TYPE delta_resource_state;

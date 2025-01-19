@@ -4,7 +4,7 @@ sql:
     queries:
       - delta_namespace.sql
       - delta_resource.sql
-      - delta_controller_inform.sql
+      - delta_controller.sql
     schema: "./../migrations/*/"
     gen:
       go:

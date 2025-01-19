@@ -24,7 +24,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	controllers := delta.NewControllers(db)
+	controllers := delta.NewControllers()
 	delta.AddController(controllers, &emailController{})
 	delta.AddController(controllers, &mailController{})
 
@@ -38,7 +38,7 @@ func main() {
 			},
 		},
 		Controllers:            controllers,
-		ResourceInformInterval: 10 * time.Second, // re-run controller Informers every 10 seconds
+		ResourceInformInterval: 30 * time.Second, // re-run controller Informers every 10 seconds
 		MaintenanceJobInterval: 5 * time.Second,  // run maintenance jobs every 5 seconds
 	})
 	if err != nil {

@@ -8,7 +8,6 @@ import (
 	"github.com/chariot-giving/delta/internal/middleware"
 	"github.com/chariot-giving/delta/internal/object"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 )
 
@@ -32,12 +31,15 @@ func (s ScheduleArgs[T]) InsertOpts() river.InsertOpts {
 // resources based on Delta's internal scheduling logic as opposed to external
 // triggers/channels.
 type controllerScheduler[T Object] struct {
-	pool    *pgxpool.Pool
 	factory object.ObjectFactory
 	river.WorkerDefaults[ScheduleArgs[T]]
 }
 
 func (w *controllerScheduler[T]) Work(ctx context.Context, job *river.Job[ScheduleArgs[T]]) error {
+	client, err := ClientFromContextSafely(ctx)
+	if err != nil {
+		return err
+	}
 	logger := middleware.LoggerFromContext(ctx)
 	riverClient, err := river.ClientFromContextSafely[pgx.Tx](ctx)
 	if err != nil {
@@ -46,7 +48,7 @@ func (w *controllerScheduler[T]) Work(ctx context.Context, job *river.Job[Schedu
 
 	logger.Debug("scheduling resource", "resource_id", job.Args.ResourceID, "resource_kind", job.Args.object.Kind())
 
-	tx, err := w.pool.Begin(ctx)
+	tx, err := client.dbPool.Begin(ctx)
 	if err != nil {
 		return err
 	}

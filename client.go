@@ -206,14 +206,27 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 }
 
 func (c *Client) Start(ctx context.Context) error {
+	queries := sqlc.New(c.dbPool)
+
+	// seed the initial namespaces
 	for namespace, config := range c.config.Namespaces {
 		if err := validateNamespace(namespace); err != nil {
 			return err
 		}
-
-		_, err := sqlc.New(c.dbPool).NamespaceCreateOrSetUpdatedAt(ctx, &sqlc.NamespaceCreateOrSetUpdatedAtParams{
+		_, err := queries.NamespaceCreateOrSetUpdatedAt(ctx, &sqlc.NamespaceCreateOrSetUpdatedAtParams{
 			Name:      namespace,
 			ExpiryTtl: int32(config.ResourceExpiry.Milliseconds() / 1000),
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	// seed the initial controllers
+	for _, controller := range c.config.Controllers.controllerMap {
+		_, err := queries.ControllerCreateOrSetUpdatedAt(ctx, &sqlc.ControllerCreateOrSetUpdatedAtParams{
+			Name:     controller.object.Kind(),
+			Metadata: json.RawMessage(`{}`),
 		})
 		if err != nil {
 			return err
@@ -314,21 +327,17 @@ func (c *Client) InformTx(ctx context.Context, tx pgx.Tx, object Object, opts *I
 
 // ScheduleInform schedules an inform job for a controller to sync resources.
 func (c *Client) ScheduleInform(ctx context.Context, params ScheduleInformParams, informOpts *InformOptions) error {
-	queries := sqlc.New(c.dbPool)
+	// queries := sqlc.New(c.dbPool)
 
-	optsBytes, err := json.Marshal(informOpts)
-	if err != nil {
-		return err
-	}
-
-	_, err = queries.ControllerInformCreate(ctx, &sqlc.ControllerInformCreateParams{
+	_, err := c.client.Insert(ctx, InformArgs[kindObject]{
 		ResourceKind:    params.ResourceKind,
 		ProcessExisting: params.ProcessExisting,
 		RunForeground:   params.RunForeground,
-		Opts:            optsBytes,
-	})
+		Options:         informOpts,
+		object:          kindObject{kind: params.ResourceKind},
+	}, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to insert inform job: %w", err)
 	}
 
 	return nil

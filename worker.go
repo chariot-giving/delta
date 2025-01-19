@@ -7,7 +7,6 @@ import (
 
 	"github.com/chariot-giving/delta/internal/db/sqlc"
 	"github.com/chariot-giving/delta/internal/object"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 )
 
@@ -16,13 +15,17 @@ type Worker[T Object] interface {
 }
 
 type controllerWorker[T Object] struct {
-	pool    *pgxpool.Pool
 	factory object.ObjectFactory
 	river.WorkerDefaults[Resource[T]]
 }
 
 func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[T]]) error {
-	queries := sqlc.New(w.pool)
+	client, err := ClientFromContextSafely(ctx)
+	if err != nil {
+		return err
+	}
+
+	queries := sqlc.New(client.dbPool)
 	resource := job.Args
 	object := w.factory.Make(resource.ResourceRow)
 	if err := object.UnmarshalResource(); err != nil {
@@ -30,7 +33,7 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 	}
 
 	// do the work!
-	err := object.Work(ctx)
+	err = object.Work(ctx)
 	if err != nil {
 		state := sqlc.DeltaResourceStateFailed
 		if job.Attempt >= job.MaxAttempts {

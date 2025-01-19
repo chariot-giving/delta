@@ -2,7 +2,6 @@ package delta
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -47,42 +46,37 @@ func (w *controllerInformerScheduler) Work(ctx context.Context, job *river.Job[I
 
 	queries := sqlc.New(w.pool)
 
-	informers, err := queries.ControllerInformReadyList(ctx, job.Args.InformInterval)
+	controllers, err := queries.ControllerListReady(ctx, job.Args.InformInterval)
 	if err != nil {
 		return err
 	}
 
-	logger.Info("found controller informers", "num_informers", len(informers))
+	logger.Info("found controllers", "size", len(controllers))
 
-	for _, informer := range informers {
-		var opts InformOptions
-		if informer.Opts != nil {
-			err = json.Unmarshal(informer.Opts, &opts)
-			if err != nil {
-				return fmt.Errorf("failed to unmarshal inform opts: %w", err)
-			}
+	for _, controller := range controllers {
+		opts := InformOptions{
+			Since: &controller.LastInformTime,
 		}
 
 		res, err := riverClient.Insert(ctx, InformArgs[kindObject]{
-			ID:              informer.ID,
-			ResourceKind:    informer.ResourceKind,
-			ProcessExisting: informer.ProcessExisting,
-			RunForeground:   informer.RunForeground,
+			ResourceKind:    controller.Name,
+			ProcessExisting: false,
+			RunForeground:   false,
 			Options:         &opts,
-			object:          kindObject{kind: informer.ResourceKind},
+			object:          kindObject{kind: controller.Name},
 		}, nil)
 		if err != nil {
 			return fmt.Errorf("failed to insert inform job: %w", err)
 		}
 
 		if res.UniqueSkippedAsDuplicate {
-			logger.Info("skipped controller inform job", "informer_id", informer.ID, "resource_kind", informer.ResourceKind)
+			logger.Info("skipped controller inform job", "resource_kind", controller.Name)
 		} else {
-			logger.Info("inserted controller inform job", "informer_id", informer.ID, "resource_kind", informer.ResourceKind)
+			logger.Info("inserted controller inform job", "resource_kind", controller.Name)
 		}
 	}
 
-	logger.Info("finished scheduling controller inform jobs", "num_informers", len(informers))
+	logger.Info("finished scheduling controller inform jobs", "size", len(controllers))
 
 	return nil
 }

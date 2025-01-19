@@ -1,13 +1,9 @@
 package delta
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 
-	"github.com/chariot-giving/delta/internal/db/sqlc"
 	"github.com/chariot-giving/delta/internal/object"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 )
 
@@ -50,16 +46,13 @@ func AddControllerSafely[T Object](controllers *Controllers, controller Controll
 	objectWrapper := &objectFactoryWrapper[T]{controller: controller}
 	workConfigurer := &controllerConfigurer[T]{
 		worker: &controllerWorker[T]{
-			pool:    controllers.pool,
 			factory: objectWrapper,
 		},
 		informer: &controllerInformer[T]{
-			pool:     controllers.pool,
 			factory:  objectWrapper,
 			informer: controller,
 		},
 		scheduler: &controllerScheduler[T]{
-			pool:    controllers.pool,
 			factory: objectWrapper,
 		},
 	}
@@ -73,7 +66,6 @@ func AddControllerSafely[T Object](controllers *Controllers, controller Controll
 // controller.
 type Controllers struct {
 	controllerMap map[string]controllerInfo // resource kind -> controller info
-	pool          *pgxpool.Pool
 }
 
 // controllerInfo bundles information about a registered controller for later lookup
@@ -88,10 +80,9 @@ type controllerInfo struct {
 //
 // Use the top-level AddController function combined with a Controllers registry to
 // register each available controller.
-func NewControllers(pool *pgxpool.Pool) *Controllers {
+func NewControllers() *Controllers {
 	return &Controllers{
 		controllerMap: make(map[string]controllerInfo),
-		pool:          pool,
 	}
 }
 
@@ -106,20 +97,6 @@ func (c Controllers) add(object Object, factory object.ObjectFactory, configurer
 		object:        object,
 		objectFactory: factory,
 		configurer:    configurer,
-	}
-
-	// seed the initial controller inform
-	// TODO: update this code based on service restarts
-	queries := sqlc.New(c.pool)
-	_, err := queries.ControllerInformCreate(context.Background(), &sqlc.ControllerInformCreateParams{
-		ResourceKind:    kind,
-		Opts:            json.RawMessage(`{}`),
-		Metadata:        json.RawMessage(`{}`),
-		ProcessExisting: false,
-		RunForeground:   false,
-	})
-	if err != nil {
-		return err
 	}
 
 	return nil

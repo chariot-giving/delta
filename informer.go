@@ -13,7 +13,6 @@ import (
 	"github.com/chariot-giving/delta/internal/middleware"
 	"github.com/chariot-giving/delta/internal/object"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 )
@@ -42,19 +41,17 @@ type Informer[T Object] interface {
 }
 
 type InformArgs[T Object] struct {
-	// The ID of the controller inform record
-	ID int32
 	// ResourceKind is the kind of resource to inform
 	// Required parameter
 	ResourceKind string `river:"unique"`
 	// ProcessExisting is used to determine if the informer should process existing resources
 	// The informer checks existence based on object.Compare() or hash comparison
 	// Defaults to false (skip existing)
-	ProcessExisting bool
+	ProcessExisting bool `river:"unique"`
 	// RunForeground is used to determine if the informer should run the work in the foreground or background
 	// Defaults to false (background)
 	// TODO: implement this
-	RunForeground bool
+	RunForeground bool `river:"unique"`
 	// Options are optional settings for filtering resources during inform.
 	Options *InformOptions
 	// Object is the resource to inform
@@ -84,43 +81,37 @@ func (i InformArgs[T]) InsertOpts() river.InsertOpts {
 
 // controllerInformer is a worker that informs the controller of resources from external sources.
 type controllerInformer[T Object] struct {
-	pool     *pgxpool.Pool
 	factory  object.ObjectFactory
 	informer Informer[T]
 	river.WorkerDefaults[InformArgs[T]]
 }
 
 func (i *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformArgs[T]]) error {
-	queries := sqlc.New(i.pool)
+	client, err := ClientFromContextSafely(ctx)
+	if err != nil {
+		return err
+	}
+	queries := sqlc.New(client.dbPool)
 
-	inform, err := queries.ControllerInformGet(ctx, job.Args.ID)
+	controller, err := queries.ControllerGet(ctx, job.Args.ResourceKind)
 	if err != nil {
 		return fmt.Errorf("failed to get controller inform record: %w", err)
 	}
 
-	var opts InformOptions
-	if inform.Opts != nil {
-		if err := json.Unmarshal(inform.Opts, &opts); err != nil {
-			return fmt.Errorf("failed to unmarshal inform opts: %w", err)
-		}
-	}
-
-	metadata := opts.Labels
+	metadata := make(map[string]string)
 	if len(job.Args.Options.Labels) > 0 {
 		metadata = job.Args.Options.Labels
 	}
 	informOpts := InformOptions{
 		Labels:  metadata,
-		Since:   firstNonZero(job.Args.Options.Since, inform.LastInformTime), // or we could take whichever is earlier?
-		OrderBy: firstNonZero(job.Args.Options.OrderBy, opts.OrderBy),
-		Limit:   firstNonZero(job.Args.Options.Limit, opts.Limit),
+		Since:   firstNonZero(job.Args.Options.Since, &controller.LastInformTime), // or we could take whichever is earlier?
+		OrderBy: firstNonZero(job.Args.Options.OrderBy),
+		Limit:   firstNonZero(job.Args.Options.Limit),
 	}
 
 	// Set a 5-minute deadline for the entire operation
 	ctx, cancel := context.WithTimeout(ctx, i.Timeout(job))
 	defer cancel()
-
-	var numResources int64
 
 	queue, err := i.informer.Inform(ctx, &informOpts)
 	if err != nil {
@@ -132,19 +123,15 @@ func (i *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformA
 		case obj, ok := <-queue:
 			if !ok {
 				// happy path: successfully informed all resources
-				// this is to keep track of the last successful inform time
-				// so that we can filter resources that have changed since then
-				// in subsequent inform jobs
-				err := queries.ControllerInformSetInformed(ctx, &sqlc.ControllerInformSetInformedParams{
-					ID:           job.Args.ID,
-					NumResources: numResources,
-				})
-				if err != nil {
-					return err
+				if !job.Args.ProcessExisting {
+					// only update the controller last inform time if we aren't processing existing resources
+					err := queries.ControllerSetLastInformTime(ctx, controller.Name)
+					if err != nil {
+						return err
+					}
 				}
 				return nil
 			}
-			numResources++
 			if err := i.processObject(ctx, obj, &job.Args); err != nil {
 				return err
 			}
@@ -162,13 +149,17 @@ func (i *controllerInformer[T]) Timeout(job *river.Job[InformArgs[T]]) time.Dura
 }
 
 func (i *controllerInformer[T]) processObject(ctx context.Context, object T, args *InformArgs[T]) error {
+	client, err := ClientFromContextSafely(ctx)
+	if err != nil {
+		return err
+	}
 	logger := middleware.LoggerFromContext(ctx)
 	riverClient, err := river.ClientFromContextSafely[pgx.Tx](ctx)
 	if err != nil {
 		return err
 	}
 
-	tx, err := i.pool.Begin(ctx)
+	tx, err := client.dbPool.Begin(ctx)
 	if err != nil {
 		return err
 	}
