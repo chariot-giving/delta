@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -279,6 +280,23 @@ func (c *Client) InformTx(ctx context.Context, tx pgx.Tx, object Object, opts *I
 
 	namespace := firstNonZero(opts.Namespace, objectInformOpts.Namespace, namespaceDefault)
 
+	tags := opts.Tags
+	if opts.Tags == nil {
+		tags = objectInformOpts.Tags
+	}
+	if tags == nil {
+		tags = []string{}
+	} else {
+		for _, tag := range tags {
+			if len(tag) > 255 {
+				return nil, errors.New("tags should be a maximum of 255 characters long")
+			}
+			if !tagRE.MatchString(tag) {
+				return nil, errors.New("tags should match regex " + tagRE.String())
+			}
+		}
+	}
+
 	objBytes, err := json.Marshal(object)
 	if err != nil {
 		return nil, err
@@ -292,7 +310,7 @@ func (c *Client) InformTx(ctx context.Context, tx pgx.Tx, object Object, opts *I
 		State:     sqlc.DeltaResourceStateScheduled,
 		Object:    objBytes,
 		Metadata:  objectInformOpts.Metadata,
-		Tags:      objectInformOpts.Tags,
+		Tags:      tags,
 		Hash:      hash[:],
 	})
 	if err != nil {

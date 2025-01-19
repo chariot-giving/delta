@@ -180,12 +180,23 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 
 			namespace := firstNonZero(objectInformOpts.Namespace, namespaceDefault)
 
+			tags := objectInformOpts.Tags
+			if tags == nil {
+				tags = []string{}
+			} else {
+				for _, tag := range tags {
+					if len(tag) > 255 {
+						return fmt.Errorf("tags should be a maximum of 255 characters long")
+					}
+					if !tagRE.MatchString(tag) {
+						return fmt.Errorf("tags should match regex " + tagRE.String())
+					}
+				}
+			}
+
 			// TODO: clean this up
 			if len(objectInformOpts.Metadata) == 0 {
 				objectInformOpts.Metadata = []byte(`{}`)
-			}
-			if len(objectInformOpts.Tags) == 0 {
-				objectInformOpts.Tags = []string{}
 			}
 
 			objBytes, err := json.Marshal(object)
@@ -201,7 +212,7 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 				State:       sqlc.DeltaResourceStateScheduled,
 				Object:      objBytes,
 				Metadata:    objectInformOpts.Metadata,
-				Tags:        objectInformOpts.Tags,
+				Tags:        tags,
 				Hash:        hash[:],
 				MaxAttempts: 10, // TODO: make this configurable
 			})
