@@ -10,6 +10,19 @@ import (
 	"time"
 )
 
+const resourceCountExpired = `-- name: ResourceCountExpired :one
+SELECT count(*)
+FROM delta_resource
+WHERE state = 'expired'
+`
+
+func (q *Queries) ResourceCountExpired(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, resourceCountExpired)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const resourceCreateOrUpdate = `-- name: ResourceCreateOrUpdate :one
 INSERT INTO delta_resource (object_id, kind, namespace, state, created_at, object, metadata, tags, hash, max_attempts)
 VALUES ($1, $2, $3, $4, NOW(), $5, $6, $7, $8, $9)
@@ -73,6 +86,47 @@ func (q *Queries) ResourceCreateOrUpdate(ctx context.Context, arg *ResourceCreat
 		&i.IsInsert,
 	)
 	return &i, err
+}
+
+const resourceDeleteBefore = `-- name: ResourceDeleteBefore :one
+WITH deleted_resources AS (
+    DELETE FROM delta_resource
+    WHERE id IN (
+        SELECT id
+        FROM delta_resource
+        WHERE
+            delta_resource.namespace = $1
+            AND (state = 'deleted' AND synced_at < $2::timestamptz) OR
+            (state = 'synced' AND synced_at < $3::timestamptz) OR
+            (state = 'degraded' AND synced_at < $4::timestamptz)
+        ORDER BY id
+        LIMIT $5::bigint
+    )
+    RETURNING id, state, attempt, max_attempts, attempted_at, created_at, synced_at, object_id, kind, namespace, object, hash, metadata, tags, errors
+)
+SELECT count(*)
+FROM deleted_resources
+`
+
+type ResourceDeleteBeforeParams struct {
+	Namespace                  string
+	DeletedFinalizedAtHorizon  time.Time
+	SyncedFinalizedAtHorizon   time.Time
+	DegradedFinalizedAtHorizon time.Time
+	Max                        int64
+}
+
+func (q *Queries) ResourceDeleteBefore(ctx context.Context, arg *ResourceDeleteBeforeParams) (int64, error) {
+	row := q.db.QueryRow(ctx, resourceDeleteBefore,
+		arg.Namespace,
+		arg.DeletedFinalizedAtHorizon,
+		arg.SyncedFinalizedAtHorizon,
+		arg.DegradedFinalizedAtHorizon,
+		arg.Max,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const resourceGetByID = `-- name: ResourceGetByID :one

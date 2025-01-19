@@ -53,3 +53,34 @@ func (q *Queries) NamespaceCreateOrSetUpdatedAt(ctx context.Context, arg *Namesp
 	)
 	return &i, err
 }
+
+const namespaceList = `-- name: NamespaceList :many
+SELECT name, created_at, metadata, updated_at, expiry_ttl FROM delta_namespace
+ORDER BY updated_at DESC
+`
+
+func (q *Queries) NamespaceList(ctx context.Context) ([]*DeltaNamespace, error) {
+	rows, err := q.db.Query(ctx, namespaceList)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []*DeltaNamespace
+	for rows.Next() {
+		var i DeltaNamespace
+		if err := rows.Scan(
+			&i.Name,
+			&i.CreatedAt,
+			&i.Metadata,
+			&i.UpdatedAt,
+			&i.ExpiryTtl,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, &i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

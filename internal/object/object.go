@@ -4,6 +4,8 @@ import (
 	"context"
 
 	"github.com/chariot-giving/delta/deltatype"
+	"github.com/jackc/pgx/v5"
+	"github.com/riverqueue/river"
 )
 
 // Object provides an interface to a struct that wraps a resource to be managed
@@ -17,6 +19,7 @@ type Object interface {
 	UnmarshalResource() error
 	Compare(other any) (int, bool)
 	Work(ctx context.Context) error
+	Enqueue(ctx context.Context, tx pgx.Tx, client *river.Client[pgx.Tx]) error
 }
 
 // ObjectFactory provides an interface to a struct that can generate an

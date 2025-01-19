@@ -15,3 +15,7 @@ INSERT INTO delta_namespace(
 SET
     updated_at = coalesce(sqlc.narg('updated_at')::timestamptz, now())
 RETURNING *;
+
+-- name: NamespaceList :many
+SELECT * FROM delta_namespace
+ORDER BY updated_at DESC;

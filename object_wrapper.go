@@ -3,10 +3,13 @@ package delta
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 
 	"github.com/chariot-giving/delta/deltatype"
 	"github.com/chariot-giving/delta/internal/object"
+	"github.com/jackc/pgx/v5"
+	"github.com/riverqueue/river"
 )
 
 // objectFactoryWrapper wraps a Worker to implement objectFactory.
@@ -52,4 +55,29 @@ func (w *wrapperObject[T]) Compare(other any) (int, bool) {
 // Work implements Object.Work.
 func (w *wrapperObject[T]) Work(ctx context.Context) error {
 	return w.controller.Work(ctx, w.resource)
+}
+
+// Enqueue implements Object.Enqueue.
+func (w *wrapperObject[T]) Enqueue(ctx context.Context, tx pgx.Tx, client *river.Client[pgx.Tx]) error {
+	if w.resource == nil {
+		return fmt.Errorf("resource is nil; UnmarshalResource must be called first")
+	}
+
+	resource := *w.resource
+
+	if tx != nil {
+		_, err := client.InsertTx(ctx, tx, resource, &river.InsertOpts{
+			Queue:    "resource",
+			Tags:     resource.Tags,
+			Metadata: resource.Metadata,
+		})
+		return err
+	}
+
+	_, err := client.Insert(ctx, resource, &river.InsertOpts{
+		Queue:    "resource",
+		Tags:     resource.Tags,
+		Metadata: resource.Metadata,
+	})
+	return err
 }
