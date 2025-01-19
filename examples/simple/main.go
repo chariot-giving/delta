@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
@@ -100,7 +101,7 @@ type emailController struct {
 
 func (c *emailController) Work(ctx context.Context, resource *delta.Resource[Email]) error {
 	log.Printf("Processing email: %+v", resource.Object.ID())
-	<-time.After(5 * time.Second)
+	<-time.After(time.Duration(rand.Intn(5)) * time.Second)
 	log.Println("Finished processing email")
 	return nil
 }
@@ -153,7 +154,7 @@ type mailController struct {
 
 func (c *mailController) Work(ctx context.Context, resource *delta.Resource[Mail]) error {
 	log.Printf("Processing mail: %+v", resource.Object.ID())
-	<-time.After(5 * time.Second)
+	<-time.After(time.Duration(rand.Intn(5)) * time.Second)
 	log.Println("Finished processing mail")
 	return nil
 }
