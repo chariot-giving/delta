@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"github.com/chariot-giving/delta/internal/db/sqlc"
 	"github.com/chariot-giving/delta/internal/object"
@@ -49,20 +48,22 @@ func AddController[T Object](controllers *Controllers, controller Controller[T])
 func AddControllerSafely[T Object](controllers *Controllers, controller Controller[T]) error {
 	var object T
 	objectWrapper := &objectFactoryWrapper[T]{controller: controller}
-	controllerWorker := &controllerWorker[T]{
-		pool:    controllers.pool,
-		factory: objectWrapper,
+	workConfigurer := &controllerConfigurer[T]{
+		worker: &controllerWorker[T]{
+			pool:    controllers.pool,
+			factory: objectWrapper,
+		},
+		informer: &controllerInformer[T]{
+			pool:     controllers.pool,
+			factory:  objectWrapper,
+			informer: controller,
+		},
+		scheduler: &controllerScheduler[T]{
+			pool:    controllers.pool,
+			factory: objectWrapper,
+		},
 	}
-	controllerInformer := &controllerInformer[T]{
-		pool:       controllers.pool,
-		factory:    objectWrapper,
-		controller: controller,
-	}
-	workConfigurer := &workConfigurer[T]{
-		worker:   controllerWorker,
-		informer: controllerInformer,
-	}
-	return controllers.add(object, workConfigurer)
+	return controllers.add(object, objectWrapper, workConfigurer)
 }
 
 // Controllers is a list of available resource controllers. A Controller must be registered for
@@ -78,8 +79,9 @@ type Controllers struct {
 // controllerInfo bundles information about a registered controller for later lookup
 // in a Controllers bundle.
 type controllerInfo struct {
-	object         Object
-	workConfigurer workConfigurerInterface
+	object        Object
+	objectFactory object.ObjectFactory
+	configurer    controllerConfigurerInterface
 }
 
 // NewControllers initializes a new registry of available resource controllers.
@@ -93,21 +95,22 @@ func NewControllers(pool *pgxpool.Pool) *Controllers {
 	}
 }
 
-func (w Controllers) add(object Object, workConfigurer workConfigurerInterface) error {
+func (c Controllers) add(object Object, factory object.ObjectFactory, configurer controllerConfigurerInterface) error {
 	kind := object.Kind()
 
-	if _, ok := w.controllerMap[kind]; ok {
+	if _, ok := c.controllerMap[kind]; ok {
 		return fmt.Errorf("controller for kind %q is already registered", kind)
 	}
 
-	w.controllerMap[kind] = controllerInfo{
-		object:         object,
-		workConfigurer: workConfigurer,
+	c.controllerMap[kind] = controllerInfo{
+		object:        object,
+		objectFactory: factory,
+		configurer:    configurer,
 	}
 
 	// seed the initial controller inform
 	// TODO: update this code based on service restarts
-	queries := sqlc.New(w.pool)
+	queries := sqlc.New(c.pool)
 	_, err := queries.ControllerInformCreate(context.Background(), &sqlc.ControllerInformCreateParams{
 		ResourceKind:    kind,
 		Opts:            json.RawMessage(`{}`),
@@ -122,53 +125,20 @@ func (w Controllers) add(object Object, workConfigurer workConfigurerInterface) 
 	return nil
 }
 
-type controllerWorker[T Object] struct {
-	pool    *pgxpool.Pool
-	factory object.ObjectFactory
-	river.WorkerDefaults[Resource[T]]
+// Non-generic interface implemented by controllerConfigurer below.
+type controllerConfigurerInterface interface {
+	Configure(workers *river.Workers)
 }
 
-func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[T]]) error {
-	queries := sqlc.New(w.pool)
-	resource := job.Args
-	object := w.factory.Make(resource.ResourceRow)
-	if err := object.UnmarshalResource(); err != nil {
-		return fmt.Errorf("failed to unmarshal resource: %w", err)
-	}
+// Contains a generic object param to allow it to call AddWorker with a type
+type controllerConfigurer[T Object] struct {
+	worker    river.Worker[Resource[T]]
+	informer  river.Worker[InformArgs[T]]
+	scheduler river.Worker[ScheduleArgs[T]]
+}
 
-	// do the work!
-	err := object.Work(ctx)
-	if err != nil {
-		state := sqlc.DeltaResourceStateFailed
-		if job.Attempt >= job.MaxAttempts {
-			state = sqlc.DeltaResourceStateDegraded
-		}
-		_, uerr := queries.ResourceSetState(ctx, &sqlc.ResourceSetStateParams{
-			ID:      resource.ID,
-			Column1: true,
-			State:   state,
-			Column3: false,
-			Column5: true,
-			Column6: []byte(err.Error()),
-		})
-		if uerr != nil {
-			return uerr
-		}
-		return err
-	}
-
-	now := time.Now()
-	_, err = queries.ResourceSetState(ctx, &sqlc.ResourceSetStateParams{
-		ID:       resource.ID,
-		Column1:  true,
-		State:    sqlc.DeltaResourceStateSynced,
-		Column3:  true,
-		SyncedAt: &now,
-		Column5:  false,
-	})
-	if err != nil {
-		return err
-	}
-
-	return nil
+func (cc *controllerConfigurer[T]) Configure(workers *river.Workers) {
+	river.AddWorker(workers, cc.worker)
+	river.AddWorker(workers, cc.informer)
+	river.AddWorker(workers, cc.scheduler)
 }

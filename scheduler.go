@@ -2,93 +2,78 @@ package delta
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"time"
 
 	"github.com/chariot-giving/delta/internal/db/sqlc"
+	"github.com/chariot-giving/delta/internal/object"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 )
 
-type InformScheduleArgs struct {
-	InformInterval time.Duration
+type ScheduleArgs[T Object] struct {
+	ResourceID int64
+	object     T
 }
 
-func (s InformScheduleArgs) Kind() string {
-	return "delta.scheduler.inform"
+func (s ScheduleArgs[T]) Kind() string {
+	return fmt.Sprintf("delta.scheduler.%s", s.object.Kind())
 }
 
-func (s InformScheduleArgs) InsertOpts() river.InsertOpts {
+func (s ScheduleArgs[T]) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
-		MaxAttempts: 5,
-		Queue:       "controller",
-		UniqueOpts: river.UniqueOpts{
-			ByPeriod: time.Hour * 2,
-		},
+		Queue: "controller",
 	}
 }
 
-// controllerInformerScheduler is a worker that schedules inform jobs for controllers
-// this effectively delegates the work to the informer controller workers via river
-// This pattern allows us to have >1 delta client running configured with different controllers
-// all pointing and using the same delta database/schema.
-// You can think about it as a periodic job delegator/scheduler.
-type controllerInformerScheduler struct {
-	pool *pgxpool.Pool
-	river.WorkerDefaults[InformScheduleArgs]
+// controllerScheduler is a worker that schedules/enqueues resource jobs for controllers
+// the scheduler is similar to the informer, but the scheduler manages enqueuing
+// resources based on Delta's internal scheduling logic as opposed to external
+// triggers/channels.
+type controllerScheduler[T Object] struct {
+	pool    *pgxpool.Pool
+	factory object.ObjectFactory
+	river.WorkerDefaults[ScheduleArgs[T]]
 }
 
-func (w *controllerInformerScheduler) Work(ctx context.Context, job *river.Job[InformScheduleArgs]) error {
+func (w *controllerScheduler[T]) Work(ctx context.Context, job *river.Job[ScheduleArgs[T]]) error {
 	riverClient, err := river.ClientFromContextSafely[pgx.Tx](ctx)
 	if err != nil {
 		return err
 	}
 
-	queries := sqlc.New(w.pool)
+	tx, err := w.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
 
-	informers, err := queries.ControllerInformReadyList(ctx, job.Args.InformInterval)
+	queries := sqlc.New(tx)
+
+	resource, err := queries.ResourceSetState(ctx, &sqlc.ResourceSetStateParams{
+		ID:      job.Args.ResourceID,
+		Column1: true,
+		State:   sqlc.DeltaResourceStateScheduled,
+	})
 	if err != nil {
 		return err
 	}
 
-	for _, informer := range informers {
-		var opts InformOptions
-		if informer.Opts != nil {
-			err = json.Unmarshal(informer.Opts, &opts)
-			if err != nil {
-				return fmt.Errorf("failed to unmarshal inform opts: %w", err)
-			}
-		}
+	resourceRow := toResourceRow(resource)
+	object := w.factory.Make(&resourceRow)
+	if err := object.UnmarshalResource(); err != nil {
+		return err
+	}
 
-		_, err = riverClient.Insert(ctx, InformArgs[kindObject]{
-			ID:              informer.ID,
-			ResourceKind:    informer.ResourceKind,
-			ProcessExisting: informer.ProcessExisting,
-			RunForeground:   informer.RunForeground,
-			Options:         &opts,
-			object:          kindObject{kind: informer.ResourceKind},
-		}, nil)
-		if err != nil {
-			return fmt.Errorf("failed to insert inform job: %w", err)
-		}
+	err = object.Enqueue(ctx, tx, riverClient)
+	if err != nil {
+		return err
+	}
+
+	err = tx.Commit(ctx)
+	if err != nil {
+		return err
 	}
 
 	return nil
-}
-
-// kindObject is a simple struct that implements the Object interface
-// this is a hacky way to trick River into inserting a specific job
-// based on the resource kind.
-type kindObject struct {
-	kind string
-}
-
-func (k kindObject) Kind() string {
-	return k.kind
-}
-
-func (k kindObject) ID() string {
-	return k.kind
 }

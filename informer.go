@@ -77,14 +77,14 @@ func (i InformArgs[T]) InsertOpts() river.InsertOpts {
 // controllerInformer is a worker that informs the controller of resources from external sources.
 // It is meant to be run as a periodic job, but can also be run adhoc.
 type controllerInformer[T Object] struct {
-	pool       *pgxpool.Pool
-	factory    object.ObjectFactory
-	controller Controller[T]
+	pool     *pgxpool.Pool
+	factory  object.ObjectFactory
+	informer Informer[T]
 	river.WorkerDefaults[InformArgs[T]]
 }
 
-func (w *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformArgs[T]]) error {
-	queries := sqlc.New(w.pool)
+func (i *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformArgs[T]]) error {
+	queries := sqlc.New(i.pool)
 
 	inform, err := queries.ControllerInformGet(ctx, job.Args.ID)
 	if err != nil {
@@ -110,12 +110,12 @@ func (w *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformA
 	}
 
 	// Set a 5-minute deadline for the entire operation
-	ctx, cancel := context.WithTimeout(ctx, w.Timeout(job))
+	ctx, cancel := context.WithTimeout(ctx, i.Timeout(job))
 	defer cancel()
 
 	var numResources int64
 
-	queue, err := w.controller.Inform(ctx, &informOpts)
+	queue, err := i.informer.Inform(ctx, &informOpts)
 	if err != nil {
 		return fmt.Errorf("failed to inform controller: %w", err)
 	}
@@ -138,7 +138,7 @@ func (w *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformA
 				return nil
 			}
 			numResources++
-			if err := w.processObject(ctx, obj, &job.Args); err != nil {
+			if err := i.processObject(ctx, obj, &job.Args); err != nil {
 				return err
 			}
 		case <-ctx.Done():
@@ -147,20 +147,20 @@ func (w *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformA
 	}
 }
 
-func (w *controllerInformer[T]) Timeout(job *river.Job[InformArgs[T]]) time.Duration {
+func (i *controllerInformer[T]) Timeout(job *river.Job[InformArgs[T]]) time.Duration {
 	if job.Args.ProcessExisting {
 		return 5 * time.Minute
 	}
 	return 1 * time.Minute
 }
 
-func (w *controllerInformer[T]) processObject(ctx context.Context, object T, args *InformArgs[T]) error {
+func (i *controllerInformer[T]) processObject(ctx context.Context, object T, args *InformArgs[T]) error {
 	riverClient, err := river.ClientFromContextSafely[pgx.Tx](ctx)
 	if err != nil {
 		return err
 	}
 
-	tx, err := w.pool.Begin(ctx)
+	tx, err := i.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -230,7 +230,7 @@ func (w *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 	}
 
 	// comparison
-	compare, err := w.compareObjects(object, toResourceRow(resource))
+	compare, err := i.compareObjects(object, toResourceRow(resource))
 	if err != nil {
 		return err
 	}
@@ -264,8 +264,8 @@ func (w *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 	return tx.Commit(ctx)
 }
 
-func (w *controllerInformer[T]) compareObjects(object T, resource deltatype.ResourceRow) (int, error) {
-	resourceObject := w.factory.Make(&resource)
+func (i *controllerInformer[T]) compareObjects(object T, resource deltatype.ResourceRow) (int, error) {
+	resourceObject := i.factory.Make(&resource)
 	if err := resourceObject.UnmarshalResource(); err != nil {
 		return 0, fmt.Errorf("failed to unmarshal resource: %w", err)
 	}

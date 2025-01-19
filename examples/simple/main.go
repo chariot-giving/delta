@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -26,6 +27,12 @@ func main() {
 	delta.AddController(controllers, &emailController{})
 	delta.AddController(controllers, &mailController{})
 	deltaClient, err := delta.NewClient(db, delta.Config{
+		Logger: slog.New(slog.NewTextHandler(os.Stdout, nil)),
+		Namespaces: map[string]delta.NamespaceConfig{
+			"events": {
+				ResourceExpiry: 10 * time.Second,
+			},
+		},
 		Controllers: controllers,
 	})
 	if err != nil {
@@ -82,6 +89,12 @@ func (e Email) Kind() string {
 	return "email"
 }
 
+func (e Email) InformOpts() delta.InformOpts {
+	return delta.InformOpts{
+		Namespace: "events",
+	}
+}
+
 type emailController struct {
 }
 
@@ -127,6 +140,12 @@ func (m Mail) ID() string {
 
 func (m Mail) Kind() string {
 	return "mail"
+}
+
+func (m Mail) InformOpts() delta.InformOpts {
+	return delta.InformOpts{
+		Namespace: "events",
+	}
 }
 
 type mailController struct {

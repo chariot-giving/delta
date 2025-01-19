@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"time"
 
 	"github.com/chariot-giving/delta/deltatype"
 	"github.com/chariot-giving/delta/internal/db/sqlc"
+	"github.com/chariot-giving/delta/internal/maintenance"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
@@ -57,6 +59,31 @@ type Config struct {
 	// This field may be omitted for a program that's only informing resources rather
 	// than managing them. If it's specified, then Controllers must also be given.
 	Namespaces map[string]NamespaceConfig
+
+	// ResourceCleanerTimeout is the timeout of the individual queries within the
+	// resource cleaner.
+	//
+	// Defaults to 30 seconds, which should be more than enough time for most
+	// deployments.
+	ResourceCleanerTimeout time.Duration
+
+	// DeletedResourceRetentionPeriod is the amount of time to keep deleted resources
+	// around before they're removed permanently.
+	//
+	// Defaults to 24 hours.
+	DeletedResourceRetentionPeriod time.Duration
+
+	// SyncedResourceRetentionPeriod is the amount of time to keep synced resources
+	// around before they're removed permanently.
+	//
+	// Defaults to 24 hours.
+	SyncedResourceRetentionPeriod time.Duration
+
+	// DegradedResourceRetentionPeriod is the amount of time to keep degraded resources
+	// around before they're removed permanently.
+	//
+	// Defaults to 24 hours.
+	DegradedResourceRetentionPeriod time.Duration
 }
 
 // Client is a single isolated instance of Delta. Your application may use
@@ -86,19 +113,18 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 
 	// Add controller workers to river workers
 	for _, controller := range config.Controllers.controllerMap {
-		controller.workConfigurer.Configure(c.workers)
+		controller.configurer.Configure(c.workers)
 	}
 
-	// add generic informer delegator/scheduler
+	// add generic controller delegators
 	river.AddWorker(c.workers, &controllerInformerScheduler{pool: c.dbPool})
+	river.AddWorker(c.workers, &rescheduler{pool: c.dbPool, logger: c.config.Logger})
 
 	// Add maintenance workers to river workers
-	// 1. expirer (expire resources): easy to make stateless as it's maintenance
-	// 2. cleaner (delete old resources that are degraded): easy to make stateless as it's maintenance
-	// 3. reenqueuer (re-enqueue expired resources/objects to be worked): easy to make stateless as it's maintenance
-
-	// If someone wanted to manually mark a bunch of objects to be re-worked
-	// They could just manually expire the objects which will then get automatically re-enqueued.
+	// 1. expirer (expire resources)
+	river.AddWorker(c.workers, maintenance.NewNamespaceExpirer(c.dbPool, c.config.Logger))
+	// 2. cleaner (delete old resources that are degraded)
+	river.AddWorker(c.workers, maintenance.NewCleaner(c.dbPool, c.config.Logger))
 
 	// initialize river client
 	riverConfig := &river.Config{
@@ -126,6 +152,38 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 					RunOnStart: true,
 				},
 			),
+			river.NewPeriodicJob(
+				river.PeriodicInterval(time.Second*5),
+				func() (river.JobArgs, *river.InsertOpts) {
+					return RescheduleArgs{}, nil
+				},
+				&river.PeriodicJobOpts{
+					RunOnStart: true,
+				},
+			),
+			river.NewPeriodicJob(
+				river.PeriodicInterval(time.Second*5),
+				func() (river.JobArgs, *river.InsertOpts) {
+					return maintenance.ExpireResourceArgs{}, nil
+				},
+				&river.PeriodicJobOpts{
+					RunOnStart: true,
+				},
+			),
+			river.NewPeriodicJob(
+				river.PeriodicInterval(time.Hour*1),
+				func() (river.JobArgs, *river.InsertOpts) {
+					return maintenance.CleanResourceArgs{
+						DeletedResourceRetentionPeriod:  firstNonZero(c.config.DeletedResourceRetentionPeriod, time.Hour*24),
+						SyncedResourceRetentionPeriod:   firstNonZero(c.config.SyncedResourceRetentionPeriod, time.Hour*24),
+						DegradedResourceRetentionPeriod: firstNonZero(c.config.DegradedResourceRetentionPeriod, time.Hour*24),
+						Timeout:                         firstNonZero(c.config.ResourceCleanerTimeout, time.Second*30),
+					}, nil
+				},
+				&river.PeriodicJobOpts{
+					RunOnStart: true,
+				},
+			),
 		},
 	}
 	client, err := river.NewClient(riverpgxv5.New(c.dbPool), riverConfig)
@@ -144,8 +202,8 @@ func (c *Client) Start(ctx context.Context) error {
 		}
 
 		_, err := sqlc.New(c.dbPool).NamespaceCreateOrSetUpdatedAt(ctx, &sqlc.NamespaceCreateOrSetUpdatedAtParams{
-			Name:           namespace,
-			ResourceExpiry: int32(config.ResourceExpiry),
+			Name:      namespace,
+			ExpiryTtl: int32(config.ResourceExpiry.Milliseconds() / 1000),
 		})
 		if err != nil {
 			return err
@@ -209,14 +267,23 @@ func (c *Client) InformTx(ctx context.Context, tx pgx.Tx, object Object, opts *I
 		return nil, err
 	}
 
-	resourceRow := toResourceRow(&res.DeltaResource)
+	// We need to Insert the generic Resource struct into the river queue.
+	// In order to do this, we leverage the controller's objectFactory.
+	// This isn't ideal because it requires that the process invoking Inform
+	// has instantiated the associated controllers for the resource object kind.
+	// This means you can't have controller-less clients that can inform resources.
+	controller, ok := c.config.Controllers.controllerMap[object.Kind()]
+	if !ok {
+		return nil, fmt.Errorf("controller for kind %q is not registered", object.Kind())
+	}
 
-	_, err = c.client.InsertTx(ctx, tx, resourceRow, &river.InsertOpts{
-		Queue:    "resource",
-		Tags:     objectInformOpts.Tags,
-		Metadata: objectInformOpts.Metadata,
-	})
-	if err != nil {
+	resourceRow := toResourceRow(&res.DeltaResource)
+	objectWrapper := controller.objectFactory.Make(&resourceRow)
+	if err := objectWrapper.UnmarshalResource(); err != nil {
+		return nil, err
+	}
+
+	if err := objectWrapper.Enqueue(ctx, tx, c.client); err != nil {
 		return nil, err
 	}
 
@@ -252,4 +319,31 @@ type ScheduleInformParams struct {
 	ResourceKind    string
 	ProcessExisting bool
 	RunForeground   bool
+}
+
+// Invalidate marks a resource as expired.
+// This will cause the resource to be re-enqueued for processing/syncing.
+// Normally, this is done automatically by the expirer maintenance job.
+func (c *Client) Invalidate(ctx context.Context, object Object) (*deltatype.ResourceRow, error) {
+	queries := sqlc.New(c.dbPool)
+
+	resource, err := queries.ResourceGetByObjectIDAndKind(ctx, &sqlc.ResourceGetByObjectIDAndKindParams{
+		ObjectID: object.ID(),
+		Kind:     object.Kind(),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	updated, err := queries.ResourceSetState(ctx, &sqlc.ResourceSetStateParams{
+		ID:      resource.ID,
+		Column1: true,
+		State:   sqlc.DeltaResourceStateExpired,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	resourceRow := toResourceRow(updated)
+	return &resourceRow, nil
 }

@@ -15,7 +15,7 @@ INSERT INTO delta_namespace(
     created_at,
     metadata,
     name,
-    resource_expiry,
+    expiry_ttl,
     updated_at
 ) VALUES (
     now(),
@@ -30,17 +30,17 @@ RETURNING name, created_at, metadata, updated_at, expiry_ttl
 `
 
 type NamespaceCreateOrSetUpdatedAtParams struct {
-	Metadata       []byte
-	Name           string
-	ResourceExpiry int32
-	UpdatedAt      *time.Time
+	Metadata  []byte
+	Name      string
+	ExpiryTtl int32
+	UpdatedAt *time.Time
 }
 
 func (q *Queries) NamespaceCreateOrSetUpdatedAt(ctx context.Context, arg *NamespaceCreateOrSetUpdatedAtParams) (*DeltaNamespace, error) {
 	row := q.db.QueryRow(ctx, namespaceCreateOrSetUpdatedAt,
 		arg.Metadata,
 		arg.Name,
-		arg.ResourceExpiry,
+		arg.ExpiryTtl,
 		arg.UpdatedAt,
 	)
 	var i DeltaNamespace
@@ -52,4 +52,35 @@ func (q *Queries) NamespaceCreateOrSetUpdatedAt(ctx context.Context, arg *Namesp
 		&i.ExpiryTtl,
 	)
 	return &i, err
+}
+
+const namespaceList = `-- name: NamespaceList :many
+SELECT name, created_at, metadata, updated_at, expiry_ttl FROM delta_namespace
+ORDER BY updated_at DESC
+`
+
+func (q *Queries) NamespaceList(ctx context.Context) ([]*DeltaNamespace, error) {
+	rows, err := q.db.Query(ctx, namespaceList)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []*DeltaNamespace
+	for rows.Next() {
+		var i DeltaNamespace
+		if err := rows.Scan(
+			&i.Name,
+			&i.CreatedAt,
+			&i.Metadata,
+			&i.UpdatedAt,
+			&i.ExpiryTtl,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, &i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

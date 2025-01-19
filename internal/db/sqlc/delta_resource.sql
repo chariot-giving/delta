@@ -51,3 +51,44 @@ SET state = $4,
     max_attempts = $9
 RETURNING sqlc.embed(delta_resource), 
     (xmax = 0) as is_insert;
+-- name: ResourceExpire :batchexec
+-- Update the state of delta_resources to 'expired' based on expiryTTL
+UPDATE delta_resource
+SET state = 'expired'
+WHERE namespace = @namespace
+  AND state NOT IN ('expired', 'deleted') -- Only update resources that are not already expired or deleted
+  AND EXTRACT(EPOCH FROM (NOW() - synced_at)) > @expiry_ttl::integer;
+-- name: ResourceDeleteBefore :one
+WITH deleted_resources AS (
+    DELETE FROM delta_resource
+    WHERE id IN (
+        SELECT id
+        FROM delta_resource
+        WHERE
+            delta_resource.namespace = @namespace
+            AND (state = 'deleted' AND synced_at < @deleted_finalized_at_horizon::timestamptz) OR
+            (state = 'synced' AND synced_at < @synced_finalized_at_horizon::timestamptz) OR
+            (state = 'degraded' AND synced_at < @degraded_finalized_at_horizon::timestamptz)
+        ORDER BY id
+        LIMIT @max::bigint
+    )
+    RETURNING *
+)
+SELECT count(*)
+FROM deleted_resources;
+-- name: ResourceCountExpired :one
+SELECT count(*)
+FROM delta_resource
+WHERE state = 'expired';
+-- name: ResourceResetExpired :many
+UPDATE delta_resource
+SET 
+    state = 'pending',
+    synced_at = NULL,
+    errors = array_append(errors, @error::jsonb)
+WHERE id IN (
+    SELECT id
+    FROM delta_resource
+    WHERE state = 'expired'
+)
+RETURNING *;

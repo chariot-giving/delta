@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"time"
 )
 
 const namespaceDefault = "default"
@@ -24,7 +25,13 @@ type NamespaceConfig struct {
 	// ExpiryDuration is the duration (seconds) after which a resource is considered expired.
 	//
 	// If this is set to 0, resources within the namespace will never expire.
-	ResourceExpiry int
+	ResourceExpiry time.Duration
+
+	// ResourceRetentionPeriod is the amount of time to keep resources around before
+	// they're removed permanently.
+	//
+	// Defaults to 24 hours.
+	ResourceRetentionPeriod time.Duration
 }
 
 var nameRegex = regexp.MustCompile(`^(?:[a-z0-9])+(?:[_|\-]?[a-z0-9]+)*$`)
