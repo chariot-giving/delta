@@ -12,34 +12,16 @@ import (
 	"github.com/chariot-giving/delta/deltatype"
 	"github.com/chariot-giving/delta/internal/db/sqlc"
 	"github.com/chariot-giving/delta/internal/maintenance"
+	"github.com/chariot-giving/delta/internal/middleware"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivertype"
 )
 
 // Config is the configuration for a Client.
 type Config struct {
-	// ID is the unique identifier for this client. If not set, a random
-	// identifier will be generated.
-	//
-	// This is used to identify the client in job attempts and for leader election.
-	// This value must be unique across all clients in the same database and
-	// schema and there must not be more than one process running with the same
-	// ID at the same time.
-	//
-	// A client ID should differ between different programs and must be unique
-	// across all clients in the same database and schema. There must not be
-	// more than one process running with the same ID at the same time.
-	// Duplicate IDs between processes will lead to facilities like leader
-	// election or client statistics to fail in novel ways. However, the client
-	// ID is shared by all executors within any given client. (i.e.  different
-	// Go processes have different IDs, but IDs are shared within any given
-	// process.)
-	//
-	// If in doubt, leave this property empty.
-	ID string
-
 	// Logger is the structured logger to use for logging purposes. If none is
 	// specified, logs will be emitted to STDOUT with messages at warn level
 	// or higher.
@@ -59,6 +41,18 @@ type Config struct {
 	// This field may be omitted for a program that's only informing resources rather
 	// than managing them. If it's specified, then Controllers must also be given.
 	Namespaces map[string]NamespaceConfig
+
+	// MaintenanceJobInterval is the interval at which the maintenance jobs
+	// will run.
+	//
+	// Defaults to 1 minute.
+	MaintenanceJobInterval time.Duration
+
+	// ResourceInformerInterval is the interval at which the resource informer
+	// will run.
+	//
+	// Defaults to 1 hour.
+	ResourceInformInterval time.Duration
 
 	// ResourceCleanerTimeout is the timeout of the individual queries within the
 	// resource cleaner.
@@ -99,7 +93,7 @@ type Client struct {
 func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 	logger := config.Logger
 	if logger == nil {
-		logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 			Level: slog.LevelWarn,
 		}))
 	}
@@ -111,20 +105,30 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 		workers: river.NewWorkers(),
 	}
 
-	// Add controller workers to river workers
+	// Add controller workers
 	for _, controller := range config.Controllers.controllerMap {
-		controller.configurer.Configure(c.workers)
+		if err := controller.configurer.Configure(c.workers); err != nil {
+			return nil, fmt.Errorf("error configuring %s controller: %w", controller.object.Kind(), err)
+		}
 	}
 
 	// add generic controller delegators
-	river.AddWorker(c.workers, &controllerInformerScheduler{pool: c.dbPool})
-	river.AddWorker(c.workers, &rescheduler{pool: c.dbPool, logger: c.config.Logger})
+	if err := river.AddWorkerSafely(c.workers, &controllerInformerScheduler{pool: c.dbPool}); err != nil {
+		return nil, fmt.Errorf("error adding controller informer scheduler worker: %w", err)
+	}
+	if err := river.AddWorkerSafely(c.workers, &rescheduler{pool: c.dbPool}); err != nil {
+		return nil, fmt.Errorf("error adding rescheduler worker: %w", err)
+	}
 
-	// Add maintenance workers to river workers
+	// Add maintenance workers
 	// 1. expirer (expire resources)
-	river.AddWorker(c.workers, maintenance.NewNamespaceExpirer(c.dbPool, c.config.Logger))
+	if err := river.AddWorkerSafely(c.workers, maintenance.NewNamespaceExpirer(c.dbPool)); err != nil {
+		return nil, fmt.Errorf("error adding namespace expirer worker: %w", err)
+	}
 	// 2. cleaner (delete old resources that are degraded)
-	river.AddWorker(c.workers, maintenance.NewCleaner(c.dbPool, c.config.Logger))
+	if err := river.AddWorkerSafely(c.workers, maintenance.NewCleaner(c.dbPool)); err != nil {
+		return nil, fmt.Errorf("error adding cleaner worker: %w", err)
+	}
 
 	// initialize river client
 	riverConfig := &river.Config{
@@ -140,12 +144,17 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 			},
 		},
 		Workers: c.workers,
+		//Logger:  c.config.Logger.With("name", "riverqueue"),
+		WorkerMiddleware: []rivertype.WorkerMiddleware{
+			middleware.NewLoggingMiddleware(c.config.Logger),
+			&jobContextMiddleware{client: c},
+		},
 		PeriodicJobs: []*river.PeriodicJob{
 			river.NewPeriodicJob(
-				river.PeriodicInterval(time.Hour*2),
+				river.PeriodicInterval(firstNonZero(c.config.MaintenanceJobInterval, time.Minute*1)),
 				func() (river.JobArgs, *river.InsertOpts) {
 					return InformScheduleArgs{
-						InformInterval: time.Hour * 1,
+						InformInterval: firstNonZero(c.config.ResourceInformInterval, time.Hour*1),
 					}, nil
 				},
 				&river.PeriodicJobOpts{
@@ -153,16 +162,16 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 				},
 			),
 			river.NewPeriodicJob(
-				river.PeriodicInterval(time.Second*5),
+				river.PeriodicInterval(firstNonZero(c.config.MaintenanceJobInterval, time.Minute*1)),
 				func() (river.JobArgs, *river.InsertOpts) {
-					return RescheduleArgs{}, nil
+					return RescheduleResourceArgs{}, nil
 				},
 				&river.PeriodicJobOpts{
 					RunOnStart: true,
 				},
 			),
 			river.NewPeriodicJob(
-				river.PeriodicInterval(time.Second*5),
+				river.PeriodicInterval(firstNonZero(c.config.MaintenanceJobInterval, time.Minute*1)),
 				func() (river.JobArgs, *river.InsertOpts) {
 					return maintenance.ExpireResourceArgs{}, nil
 				},
@@ -171,7 +180,7 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 				},
 			),
 			river.NewPeriodicJob(
-				river.PeriodicInterval(time.Hour*1),
+				river.PeriodicInterval(firstNonZero(c.config.MaintenanceJobInterval, time.Minute*1)),
 				func() (river.JobArgs, *river.InsertOpts) {
 					return maintenance.CleanResourceArgs{
 						DeletedResourceRetentionPeriod:  firstNonZero(c.config.DeletedResourceRetentionPeriod, time.Hour*24),
@@ -186,9 +195,10 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 			),
 		},
 	}
+
 	client, err := river.NewClient(riverpgxv5.New(c.dbPool), riverConfig)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error creating river client: %w", err)
 	}
 	c.client = client
 
@@ -209,11 +219,20 @@ func (c *Client) Start(ctx context.Context) error {
 			return err
 		}
 	}
-	return c.client.Start(ctx)
+
+	if err := c.client.Start(ctx); err != nil {
+		return fmt.Errorf("error starting river client: %w", err)
+	}
+
+	return nil
 }
 
 func (c *Client) Stop(ctx context.Context) error {
-	return c.client.Stop(ctx)
+	if err := c.client.Stop(ctx); err != nil {
+		return fmt.Errorf("error stopping river client: %w", err)
+	}
+
+	return nil
 }
 
 // Inform the Delta system of an object.
@@ -323,7 +342,14 @@ type ScheduleInformParams struct {
 
 // Invalidate marks a resource as expired.
 // This will cause the resource to be re-enqueued for processing/syncing.
-// Normally, this is done automatically by the expirer maintenance job.
+// Normally, this is done automatically by the expirer maintenance job
+// if the resource exists within a namespace that has an expiry ttl.
+//
+// If the resource does not exist within a namespace that has an expiry ttl,
+// then you must manually call Invalidate to re-enqueue the resource.
+//
+// This is useful if you want to re-enqueue a resource that was previously
+// synced, but should be re-processed for some reason.
 func (c *Client) Invalidate(ctx context.Context, object Object) (*deltatype.ResourceRow, error) {
 	queries := sqlc.New(c.dbPool)
 
@@ -333,6 +359,10 @@ func (c *Client) Invalidate(ctx context.Context, object Object) (*deltatype.Reso
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	if resource.State != sqlc.DeltaResourceStateSynced {
+		return nil, fmt.Errorf("resource is %s, cannot invalidate; only synced resources can be invalidated", resource.State)
 	}
 
 	updated, err := queries.ResourceSetState(ctx, &sqlc.ResourceSetStateParams{

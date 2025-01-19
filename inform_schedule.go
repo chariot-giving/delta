@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/chariot-giving/delta/internal/db/sqlc"
+	"github.com/chariot-giving/delta/internal/middleware"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
@@ -24,9 +25,6 @@ func (s InformScheduleArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
 		MaxAttempts: 5,
 		Queue:       "controller",
-		UniqueOpts: river.UniqueOpts{
-			ByPeriod: time.Hour * 2,
-		},
 	}
 }
 
@@ -41,6 +39,7 @@ type controllerInformerScheduler struct {
 }
 
 func (w *controllerInformerScheduler) Work(ctx context.Context, job *river.Job[InformScheduleArgs]) error {
+	logger := middleware.LoggerFromContext(ctx)
 	riverClient, err := river.ClientFromContextSafely[pgx.Tx](ctx)
 	if err != nil {
 		return err
@@ -53,6 +52,8 @@ func (w *controllerInformerScheduler) Work(ctx context.Context, job *river.Job[I
 		return err
 	}
 
+	logger.Info("found controller informers", "num_informers", len(informers))
+
 	for _, informer := range informers {
 		var opts InformOptions
 		if informer.Opts != nil {
@@ -62,7 +63,7 @@ func (w *controllerInformerScheduler) Work(ctx context.Context, job *river.Job[I
 			}
 		}
 
-		_, err = riverClient.Insert(ctx, InformArgs[kindObject]{
+		res, err := riverClient.Insert(ctx, InformArgs[kindObject]{
 			ID:              informer.ID,
 			ResourceKind:    informer.ResourceKind,
 			ProcessExisting: informer.ProcessExisting,
@@ -73,7 +74,15 @@ func (w *controllerInformerScheduler) Work(ctx context.Context, job *river.Job[I
 		if err != nil {
 			return fmt.Errorf("failed to insert inform job: %w", err)
 		}
+
+		if res.UniqueSkippedAsDuplicate {
+			logger.Info("skipped controller inform job", "informer_id", informer.ID, "resource_kind", informer.ResourceKind)
+		} else {
+			logger.Info("inserted controller inform job", "informer_id", informer.ID, "resource_kind", informer.ResourceKind)
+		}
 	}
+
+	logger.Info("finished scheduling controller inform jobs", "num_informers", len(informers))
 
 	return nil
 }

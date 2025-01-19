@@ -127,7 +127,7 @@ func (c Controllers) add(object Object, factory object.ObjectFactory, configurer
 
 // Non-generic interface implemented by controllerConfigurer below.
 type controllerConfigurerInterface interface {
-	Configure(workers *river.Workers)
+	Configure(workers *river.Workers) error
 }
 
 // Contains a generic object param to allow it to call AddWorker with a type
@@ -137,8 +137,15 @@ type controllerConfigurer[T Object] struct {
 	scheduler river.Worker[ScheduleArgs[T]]
 }
 
-func (cc *controllerConfigurer[T]) Configure(workers *river.Workers) {
-	river.AddWorker(workers, cc.worker)
-	river.AddWorker(workers, cc.informer)
-	river.AddWorker(workers, cc.scheduler)
+func (cc *controllerConfigurer[T]) Configure(workers *river.Workers) error {
+	if err := river.AddWorkerSafely(workers, cc.worker); err != nil {
+		return err
+	}
+	if err := river.AddWorkerSafely(workers, cc.informer); err != nil {
+		return err
+	}
+	if err := river.AddWorkerSafely(workers, cc.scheduler); err != nil {
+		return err
+	}
+	return nil
 }

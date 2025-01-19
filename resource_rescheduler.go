@@ -4,24 +4,24 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/chariot-giving/delta/deltatype"
 	"github.com/chariot-giving/delta/internal/db/sqlc"
+	"github.com/chariot-giving/delta/internal/middleware"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 )
 
-type RescheduleArgs struct {
+type RescheduleResourceArgs struct {
 }
 
-func (r RescheduleArgs) Kind() string {
-	return "delta.maintenance.reschedule"
+func (r RescheduleResourceArgs) Kind() string {
+	return "delta.scheduler.resources"
 }
 
-func (r RescheduleArgs) InsertOpts() river.InsertOpts {
+func (r RescheduleResourceArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
 		MaxAttempts: 5,
 		Queue:       "maintenance",
@@ -29,12 +29,12 @@ func (r RescheduleArgs) InsertOpts() river.InsertOpts {
 }
 
 type rescheduler struct {
-	pool   *pgxpool.Pool
-	logger *slog.Logger
-	river.WorkerDefaults[RescheduleArgs]
+	pool *pgxpool.Pool
+	river.WorkerDefaults[RescheduleResourceArgs]
 }
 
-func (r *rescheduler) Work(ctx context.Context, job *river.Job[RescheduleArgs]) error {
+func (r *rescheduler) Work(ctx context.Context, job *river.Job[RescheduleResourceArgs]) error {
+	logger := middleware.LoggerFromContext(ctx)
 	riverClient, err := river.ClientFromContextSafely[pgx.Tx](ctx)
 	if err != nil {
 		return err
@@ -61,13 +61,14 @@ func (r *rescheduler) Work(ctx context.Context, job *river.Job[RescheduleArgs]) 
 
 	resources, err := queries.ResourceResetExpired(ctx, errorData)
 	if err != nil {
-		r.logger.Error("error resetting expired resources", "error", err)
+		logger.Error("error resetting expired resources", "error", err)
 		return err
 	}
 
 	if len(resources) > 0 {
 		insertParams := make([]river.InsertManyParams, len(resources))
 		for i, resource := range resources {
+			logger.Debug("re-scheduling resource", "resource_id", resource.ID, "resource_kind", resource.Kind)
 			insertParams[i] = river.InsertManyParams{
 				Args: ScheduleArgs[kindObject]{
 					ResourceID: resource.ID,
@@ -78,11 +79,13 @@ func (r *rescheduler) Work(ctx context.Context, job *river.Job[RescheduleArgs]) 
 
 		_, err = riverClient.InsertManyTx(ctx, tx, insertParams)
 		if err != nil {
-			r.logger.Error("error inserting rescheduled resources", "error", err)
+			logger.Error("error inserting rescheduled resources", "error", err)
 			return err
 		}
 
-		r.logger.Info("rescheduled expired resources", "count", len(resources))
+		logger.Info("rescheduled expired resources", "count", len(resources))
+	} else {
+		logger.Debug("no expired resources to reschedule")
 	}
 
 	if err := tx.Commit(ctx); err != nil {

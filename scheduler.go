@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/chariot-giving/delta/internal/db/sqlc"
+	"github.com/chariot-giving/delta/internal/middleware"
 	"github.com/chariot-giving/delta/internal/object"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -37,10 +38,13 @@ type controllerScheduler[T Object] struct {
 }
 
 func (w *controllerScheduler[T]) Work(ctx context.Context, job *river.Job[ScheduleArgs[T]]) error {
+	logger := middleware.LoggerFromContext(ctx)
 	riverClient, err := river.ClientFromContextSafely[pgx.Tx](ctx)
 	if err != nil {
 		return err
 	}
+
+	logger.Debug("scheduling resource", "resource_id", job.Args.ResourceID, "resource_kind", job.Args.object.Kind())
 
 	tx, err := w.pool.Begin(ctx)
 	if err != nil {
@@ -74,6 +78,8 @@ func (w *controllerScheduler[T]) Work(ctx context.Context, job *river.Job[Schedu
 	if err != nil {
 		return err
 	}
+
+	logger.Info("scheduled resource", "resource_id", job.Args.ResourceID, "resource_kind", job.Args.object.Kind())
 
 	return nil
 }

@@ -2,10 +2,10 @@ package maintenance
 
 import (
 	"context"
-	"log/slog"
 	"time"
 
 	"github.com/chariot-giving/delta/internal/db/sqlc"
+	"github.com/chariot-giving/delta/internal/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 )
@@ -44,29 +44,31 @@ func (c CleanResourceArgs) InsertOpts() river.InsertOpts {
 type cleaner struct {
 	pool      *pgxpool.Pool
 	batchSize int
-	logger    *slog.Logger
 	river.WorkerDefaults[CleanResourceArgs]
 }
 
-func NewCleaner(pool *pgxpool.Pool, logger *slog.Logger) *cleaner {
+func NewCleaner(pool *pgxpool.Pool) *cleaner {
 	return &cleaner{
-		pool:   pool,
-		logger: logger,
+		pool: pool,
 	}
 }
 
 func (c *cleaner) Work(ctx context.Context, job *river.Job[CleanResourceArgs]) error {
+	logger := middleware.LoggerFromContext(ctx).WithGroup("maintenance").With("name", "cleaner")
 	queries := sqlc.New(c.pool)
 
 	namespaces, err := queries.NamespaceList(ctx)
 	if err != nil {
 		return err
 	}
+	namespaces = append(namespaces, &sqlc.DeltaNamespace{
+		Name: "default",
+	})
 
-	c.logger.Debug("cleaning resources", "num_namespaces", len(namespaces))
+	logger.Info("cleaning resources", "num_namespaces", len(namespaces))
 
 	for _, namespace := range namespaces {
-		c.logger.Debug("cleaning resources", "namespace", namespace.Name)
+		logger.Debug("cleaning resources", "namespace", namespace.Name)
 
 		// Wrapped in a function so that defers run as expected.
 		numDeleted, err := func() (int, error) {
@@ -89,10 +91,10 @@ func (c *cleaner) Work(ctx context.Context, job *river.Job[CleanResourceArgs]) e
 			return err
 		}
 
-		c.logger.Debug("deleted resources", "namespace", namespace.Name, "num_deleted", numDeleted)
+		logger.Debug("deleted resources", "namespace", namespace.Name, "num_deleted", numDeleted)
 	}
 
-	c.logger.Debug("finished cleaning resources")
+	logger.Info("finished cleaning resources")
 
 	return nil
 }

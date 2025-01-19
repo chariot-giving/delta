@@ -180,7 +180,15 @@ The control plane's components make global decisions about how Delta manages res
 
 ### postgres
 
-Persisted state is stored in a Postgres database.
+Persisted state is stored in a [Postgres](https://www.postgresql.org/docs/) database.
+
+### river
+
+Control plane component that manages, queues, and schedules execution of background jobs.
+River relies on Postgres to store job and queue state, and also embeds a leader election mechanism
+to manage periodic maintenance of Delta's control plane.
+
+You can learn more about River in the [official documentation](https://riverqueue.com/docs).
 
 ## Architecture
 

@@ -27,14 +27,19 @@ func main() {
 	controllers := delta.NewControllers(db)
 	delta.AddController(controllers, &emailController{})
 	delta.AddController(controllers, &mailController{})
+
 	deltaClient, err := delta.NewClient(db, delta.Config{
-		Logger: slog.New(slog.NewTextHandler(os.Stdout, nil)),
+		Logger: slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+			Level: slog.LevelWarn,
+		})),
 		Namespaces: map[string]delta.NamespaceConfig{
 			"events": {
-				ResourceExpiry: 10 * time.Second,
+				ResourceExpiry: 10 * time.Minute, // expire resources after 10 minutes
 			},
 		},
-		Controllers: controllers,
+		Controllers:            controllers,
+		ResourceInformInterval: 10 * time.Second, // re-run controller Informers every 10 seconds
+		MaintenanceJobInterval: 5 * time.Second,  // run maintenance jobs every 5 seconds
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -93,6 +98,7 @@ func (e Email) Kind() string {
 func (e Email) InformOpts() delta.InformOpts {
 	return delta.InformOpts{
 		Namespace: "events",
+		Tags:      []string{"test"},
 	}
 }
 

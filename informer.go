@@ -10,10 +10,12 @@ import (
 
 	"github.com/chariot-giving/delta/deltatype"
 	"github.com/chariot-giving/delta/internal/db/sqlc"
+	"github.com/chariot-giving/delta/internal/middleware"
 	"github.com/chariot-giving/delta/internal/object"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 )
 
 // InformOptions are optional settings for filtering resources during inform.
@@ -68,14 +70,19 @@ func (i InformArgs[T]) InsertOpts() river.InsertOpts {
 		MaxAttempts: 10,
 		Queue:       "controller",
 		UniqueOpts: river.UniqueOpts{
-			ByArgs:   true,
-			ByPeriod: time.Hour * 1,
+			ByArgs: true,
+			ByState: []rivertype.JobState{
+				rivertype.JobStateAvailable,
+				rivertype.JobStatePending,
+				rivertype.JobStateRunning,
+				rivertype.JobStateRetryable,
+				rivertype.JobStateScheduled,
+			},
 		},
 	}
 }
 
 // controllerInformer is a worker that informs the controller of resources from external sources.
-// It is meant to be run as a periodic job, but can also be run adhoc.
 type controllerInformer[T Object] struct {
 	pool     *pgxpool.Pool
 	factory  object.ObjectFactory
@@ -104,7 +111,7 @@ func (i *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformA
 	}
 	informOpts := InformOptions{
 		Labels:  metadata,
-		Since:   firstNonZero(job.Args.Options.Since, inform.LastInformTime),
+		Since:   firstNonZero(job.Args.Options.Since, inform.LastInformTime), // or we could take whichever is earlier?
 		OrderBy: firstNonZero(job.Args.Options.OrderBy, opts.OrderBy),
 		Limit:   firstNonZero(job.Args.Options.Limit, opts.Limit),
 	}
@@ -155,6 +162,7 @@ func (i *controllerInformer[T]) Timeout(job *river.Job[InformArgs[T]]) time.Dura
 }
 
 func (i *controllerInformer[T]) processObject(ctx context.Context, object T, args *InformArgs[T]) error {
+	logger := middleware.LoggerFromContext(ctx)
 	riverClient, err := river.ClientFromContextSafely[pgx.Tx](ctx)
 	if err != nil {
 		return err
@@ -234,8 +242,9 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 	if err != nil {
 		return err
 	}
-	if compare == 0 && !args.ProcessExisting {
-		// if the objects are the same and we don't want to process existing, skip
+	if compare == 0 && resource.State == sqlc.DeltaResourceStateSynced && !args.ProcessExisting {
+		// if the objects are the same, the resource is synced, and we don't want to process existing, skip
+		logger.Warn("skipping already processed object", "resource_id", resource.ID, "resource_kind", resource.Kind)
 		return nil
 	}
 
