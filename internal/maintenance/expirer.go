@@ -3,14 +3,14 @@ package maintenance
 import (
 	"context"
 
-	"github.com/chariot-giving/delta/internal/db/sqlc"
-	"github.com/chariot-giving/delta/internal/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
+
+	"github.com/chariot-giving/delta/internal/db/sqlc"
+	"github.com/chariot-giving/delta/internal/middleware"
 )
 
-type ExpireResourceArgs struct {
-}
+type ExpireResourceArgs struct{}
 
 func (e ExpireResourceArgs) Kind() string {
 	return "delta.maintenance.expirer"

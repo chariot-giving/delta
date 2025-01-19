@@ -1,4 +1,7 @@
-.PHONY: install generate verify build test upgrade
+.PHONY: lint install generate verify build test upgrade
+
+lint:: ## Run linter (golangci-lint)
+	golangci-lint run --fix
 
 install: go.mod
 	go mod download

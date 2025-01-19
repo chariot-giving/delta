@@ -5,11 +5,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/chariot-giving/delta/internal/db/sqlc"
-	"github.com/chariot-giving/delta/internal/middleware"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
+
+	"github.com/chariot-giving/delta/internal/db/sqlc"
+	"github.com/chariot-giving/delta/internal/middleware"
 )
 
 type InformScheduleArgs struct {

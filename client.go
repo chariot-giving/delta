@@ -10,15 +10,16 @@ import (
 	"os"
 	"time"
 
-	"github.com/chariot-giving/delta/deltatype"
-	"github.com/chariot-giving/delta/internal/db/sqlc"
-	"github.com/chariot-giving/delta/internal/maintenance"
-	"github.com/chariot-giving/delta/internal/middleware"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivertype"
+
+	"github.com/chariot-giving/delta/deltatype"
+	"github.com/chariot-giving/delta/internal/db/sqlc"
+	"github.com/chariot-giving/delta/internal/maintenance"
+	"github.com/chariot-giving/delta/internal/middleware"
 )
 
 // Config is the configuration for a Client.
@@ -100,7 +101,7 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 	}
 	config.Logger = logger
 
-	c := &Client{
+	client := &Client{
 		config:  &config,
 		dbPool:  dbPool,
 		workers: river.NewWorkers(),
@@ -108,26 +109,26 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 
 	// Add controller workers
 	for _, controller := range config.Controllers.controllerMap {
-		if err := controller.configurer.Configure(c.workers); err != nil {
+		if err := controller.configurer.Configure(client.workers); err != nil {
 			return nil, fmt.Errorf("error configuring %s controller: %w", controller.object.Kind(), err)
 		}
 	}
 
 	// add generic controller delegators
-	if err := river.AddWorkerSafely(c.workers, &controllerInformerScheduler{pool: c.dbPool}); err != nil {
+	if err := river.AddWorkerSafely(client.workers, &controllerInformerScheduler{pool: client.dbPool}); err != nil {
 		return nil, fmt.Errorf("error adding controller informer scheduler worker: %w", err)
 	}
-	if err := river.AddWorkerSafely(c.workers, &rescheduler{pool: c.dbPool}); err != nil {
+	if err := river.AddWorkerSafely(client.workers, &rescheduler{pool: client.dbPool}); err != nil {
 		return nil, fmt.Errorf("error adding rescheduler worker: %w", err)
 	}
 
 	// Add maintenance workers
 	// 1. expirer (expire resources)
-	if err := river.AddWorkerSafely(c.workers, maintenance.NewNamespaceExpirer(c.dbPool)); err != nil {
+	if err := river.AddWorkerSafely(client.workers, maintenance.NewNamespaceExpirer(client.dbPool)); err != nil {
 		return nil, fmt.Errorf("error adding namespace expirer worker: %w", err)
 	}
 	// 2. cleaner (delete old resources that are degraded)
-	if err := river.AddWorkerSafely(c.workers, maintenance.NewCleaner(c.dbPool)); err != nil {
+	if err := river.AddWorkerSafely(client.workers, maintenance.NewCleaner(client.dbPool)); err != nil {
 		return nil, fmt.Errorf("error adding cleaner worker: %w", err)
 	}
 
@@ -144,18 +145,18 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 				MaxWorkers: 1,
 			},
 		},
-		Workers: c.workers,
-		//Logger:  c.config.Logger.With("name", "riverqueue"),
+		Workers: client.workers,
+		// Logger:  c.config.Logger.With("name", "riverqueue"),
 		WorkerMiddleware: []rivertype.WorkerMiddleware{
-			middleware.NewLoggingMiddleware(c.config.Logger),
-			&jobContextMiddleware{client: c},
+			middleware.NewLoggingMiddleware(client.config.Logger),
+			&jobContextMiddleware{client: client},
 		},
 		PeriodicJobs: []*river.PeriodicJob{
 			river.NewPeriodicJob(
-				river.PeriodicInterval(firstNonZero(c.config.MaintenanceJobInterval, time.Minute*1)),
+				river.PeriodicInterval(firstNonZero(client.config.MaintenanceJobInterval, time.Minute*1)),
 				func() (river.JobArgs, *river.InsertOpts) {
 					return InformScheduleArgs{
-						InformInterval: firstNonZero(c.config.ResourceInformInterval, time.Hour*1),
+						InformInterval: firstNonZero(client.config.ResourceInformInterval, time.Hour*1),
 					}, nil
 				},
 				&river.PeriodicJobOpts{
@@ -163,7 +164,7 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 				},
 			),
 			river.NewPeriodicJob(
-				river.PeriodicInterval(firstNonZero(c.config.MaintenanceJobInterval, time.Minute*1)),
+				river.PeriodicInterval(firstNonZero(client.config.MaintenanceJobInterval, time.Minute*1)),
 				func() (river.JobArgs, *river.InsertOpts) {
 					return RescheduleResourceArgs{}, nil
 				},
@@ -172,7 +173,7 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 				},
 			),
 			river.NewPeriodicJob(
-				river.PeriodicInterval(firstNonZero(c.config.MaintenanceJobInterval, time.Minute*1)),
+				river.PeriodicInterval(firstNonZero(client.config.MaintenanceJobInterval, time.Minute*1)),
 				func() (river.JobArgs, *river.InsertOpts) {
 					return maintenance.ExpireResourceArgs{}, nil
 				},
@@ -181,13 +182,13 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 				},
 			),
 			river.NewPeriodicJob(
-				river.PeriodicInterval(firstNonZero(c.config.MaintenanceJobInterval, time.Minute*1)),
+				river.PeriodicInterval(firstNonZero(client.config.MaintenanceJobInterval, time.Minute*1)),
 				func() (river.JobArgs, *river.InsertOpts) {
 					return maintenance.CleanResourceArgs{
-						DeletedResourceRetentionPeriod:  firstNonZero(c.config.DeletedResourceRetentionPeriod, time.Hour*24),
-						SyncedResourceRetentionPeriod:   firstNonZero(c.config.SyncedResourceRetentionPeriod, time.Hour*24),
-						DegradedResourceRetentionPeriod: firstNonZero(c.config.DegradedResourceRetentionPeriod, time.Hour*24),
-						Timeout:                         firstNonZero(c.config.ResourceCleanerTimeout, time.Second*30),
+						DeletedResourceRetentionPeriod:  firstNonZero(client.config.DeletedResourceRetentionPeriod, time.Hour*24),
+						SyncedResourceRetentionPeriod:   firstNonZero(client.config.SyncedResourceRetentionPeriod, time.Hour*24),
+						DegradedResourceRetentionPeriod: firstNonZero(client.config.DegradedResourceRetentionPeriod, time.Hour*24),
+						Timeout:                         firstNonZero(client.config.ResourceCleanerTimeout, time.Second*30),
 					}, nil
 				},
 				&river.PeriodicJobOpts{
@@ -197,13 +198,13 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 		},
 	}
 
-	client, err := river.NewClient(riverpgxv5.New(c.dbPool), riverConfig)
+	riverClient, err := river.NewClient(riverpgxv5.New(client.dbPool), riverConfig)
 	if err != nil {
 		return nil, fmt.Errorf("error creating river client: %w", err)
 	}
-	c.client = client
+	client.client = riverClient
 
-	return c, nil
+	return client, nil
 }
 
 func (c *Client) Start(ctx context.Context) error {
@@ -274,7 +275,7 @@ func (c *Client) InformTx(ctx context.Context, tx pgx.Tx, object Object, opts *I
 	queries := sqlc.New(tx)
 
 	objectInformOpts := InformOpts{}
-	if objectWithOpts, ok := Object(object).(ObjectWithInformOpts); ok {
+	if objectWithOpts, ok := object.(ObjectWithInformOpts); ok {
 		objectInformOpts = objectWithOpts.InformOpts()
 	}
 

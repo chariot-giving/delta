@@ -5,16 +5,18 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 
 	"github.com/chariot-giving/delta/deltatype"
 	"github.com/chariot-giving/delta/internal/db/sqlc"
 	"github.com/chariot-giving/delta/internal/middleware"
 	"github.com/chariot-giving/delta/internal/object"
-	"github.com/jackc/pgx/v5"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 )
 
 // InformOptions are optional settings for filtering resources during inform.
@@ -59,7 +61,7 @@ type InformArgs[T Object] struct {
 }
 
 func (i InformArgs[T]) Kind() string {
-	return fmt.Sprintf("delta.inform.%s", i.object.Kind())
+	return "delta.inform." + i.ResourceKind
 }
 
 func (i InformArgs[T]) InsertOpts() river.InsertOpts {
@@ -172,7 +174,7 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 		Kind:     object.Kind(),
 	})
 	if err != nil {
-		if pgx.ErrNoRows == err {
+		if errors.Is(err, pgx.ErrNoRows) {
 			objectInformOpts := InformOpts{}
 			if objectWithOpts, ok := Object(object).(ObjectWithInformOpts); ok {
 				objectInformOpts = objectWithOpts.InformOpts()
@@ -186,10 +188,10 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 			} else {
 				for _, tag := range tags {
 					if len(tag) > 255 {
-						return fmt.Errorf("tags should be a maximum of 255 characters long")
+						return errors.New("tags should be a maximum of 255 characters long")
 					}
 					if !tagRE.MatchString(tag) {
-						return fmt.Errorf("tags should match regex " + tagRE.String())
+						return errors.New("tags should match regex " + tagRE.String())
 					}
 				}
 			}
@@ -220,18 +222,14 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 				return err
 			}
 
-			if res.IsInsert {
-				resourceRow := toResourceRow(&res.DeltaResource)
-				_, err = riverClient.InsertTx(ctx, tx, Resource[T]{Object: object, ResourceRow: &resourceRow}, &river.InsertOpts{
-					Queue:    "resource",
-					Tags:     resourceRow.Tags,
-					Metadata: resourceRow.Metadata,
-				})
-				if err != nil {
-					return err
-				}
-			} else {
-				// TODO: how do we want to handle updates?
+			resourceRow := toResourceRow(&res.DeltaResource)
+			_, err = riverClient.InsertTx(ctx, tx, Resource[T]{Object: object, ResourceRow: &resourceRow}, &river.InsertOpts{
+				Queue:    "resource",
+				Tags:     resourceRow.Tags,
+				Metadata: resourceRow.Metadata,
+			})
+			if err != nil {
+				return err
 			}
 
 			return tx.Commit(ctx)

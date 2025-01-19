@@ -1,7 +1,6 @@
 package deltatype
 
 import (
-	"fmt"
 	"time"
 )
 
@@ -87,7 +86,7 @@ type ResourceRow struct {
 }
 
 func (r ResourceRow) Kind() string {
-	return fmt.Sprintf("delta.resource.%s", r.ObjectKind)
+	return "delta.resource." + r.ObjectKind
 }
 
 type ResourceState string

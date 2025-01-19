@@ -3,8 +3,9 @@ package delta
 import (
 	"fmt"
 
-	"github.com/chariot-giving/delta/internal/object"
 	"github.com/riverqueue/river"
+
+	"github.com/chariot-giving/delta/internal/object"
 )
 
 // Controller is an interface that can manage a resource with object of type T.
@@ -107,7 +108,7 @@ type controllerConfigurerInterface interface {
 	Configure(workers *river.Workers) error
 }
 
-// Contains a generic object param to allow it to call AddWorker with a type
+// Contains a generic object param to allow it to call AddWorker with a type.
 type controllerConfigurer[T Object] struct {
 	worker    river.Worker[Resource[T]]
 	informer  river.Worker[InformArgs[T]]

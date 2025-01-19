@@ -1,8 +1,6 @@
 package delta
 
 import (
-	"fmt"
-
 	"github.com/chariot-giving/delta/deltatype"
 	"github.com/chariot-giving/delta/internal/db/sqlc"
 )
@@ -17,7 +15,7 @@ type Resource[T Object] struct {
 }
 
 func (r Resource[T]) Kind() string {
-	return fmt.Sprintf("delta.resource.%s", r.Object.Kind())
+	return "delta.resource." + r.Object.Kind()
 }
 
 // Object is an interface that represents the objects for a resource of type T.

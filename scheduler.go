@@ -2,13 +2,13 @@ package delta
 
 import (
 	"context"
-	"fmt"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/riverqueue/river"
 
 	"github.com/chariot-giving/delta/internal/db/sqlc"
 	"github.com/chariot-giving/delta/internal/middleware"
 	"github.com/chariot-giving/delta/internal/object"
-	"github.com/jackc/pgx/v5"
-	"github.com/riverqueue/river"
 )
 
 type ScheduleArgs[T Object] struct {
@@ -17,7 +17,7 @@ type ScheduleArgs[T Object] struct {
 }
 
 func (s ScheduleArgs[T]) Kind() string {
-	return fmt.Sprintf("delta.scheduler.%s", s.object.Kind())
+	return "delta.scheduler." + s.object.Kind()
 }
 
 func (s ScheduleArgs[T]) InsertOpts() river.InsertOpts {

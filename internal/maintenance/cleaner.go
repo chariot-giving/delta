@@ -4,10 +4,11 @@ import (
 	"context"
 	"time"
 
-	"github.com/chariot-giving/delta/internal/db/sqlc"
-	"github.com/chariot-giving/delta/internal/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
+
+	"github.com/chariot-giving/delta/internal/db/sqlc"
+	"github.com/chariot-giving/delta/internal/middleware"
 )
 
 type CleanResourceArgs struct {
@@ -40,7 +41,7 @@ func (c CleanResourceArgs) InsertOpts() river.InsertOpts {
 
 // cleaner is a worker that cleans up expired resources
 // cleans up old degraded resources and also synced resources older
-// than a certain threshold that are in namespaces where objects are immutable
+// than a certain threshold that are in namespaces where objects are immutable.
 type cleaner struct {
 	pool      *pgxpool.Pool
 	batchSize int

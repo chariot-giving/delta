@@ -3,13 +3,14 @@ package delta
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"reflect"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/riverqueue/river"
 
 	"github.com/chariot-giving/delta/deltatype"
 	"github.com/chariot-giving/delta/internal/object"
-	"github.com/jackc/pgx/v5"
-	"github.com/riverqueue/river"
 )
 
 // objectFactoryWrapper wraps a Worker to implement objectFactory.
@@ -43,9 +44,9 @@ func (w *wrapperObject[T]) UnmarshalResource() error {
 
 // Compare implements Object.Compare.
 func (w *wrapperObject[T]) Compare(other any) (int, bool) {
-	if comparable, ok := other.(ComparableObject); ok {
+	if comparableObj, ok := other.(ComparableObject); ok {
 		if reflect.TypeOf(other) == reflect.TypeOf(w.resource.Object) {
-			return comparable.Compare(w.resource.Object), true
+			return comparableObj.Compare(w.resource.Object), true
 		}
 	}
 
@@ -60,7 +61,7 @@ func (w *wrapperObject[T]) Work(ctx context.Context) error {
 // Enqueue implements Object.Enqueue.
 func (w *wrapperObject[T]) Enqueue(ctx context.Context, tx pgx.Tx, client *river.Client[pgx.Tx]) error {
 	if w.resource == nil {
-		return fmt.Errorf("resource is nil; UnmarshalResource must be called first")
+		return errors.New("resource is nil; UnmarshalResource must be called first")
 	}
 
 	resource := *w.resource

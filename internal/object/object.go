@@ -3,9 +3,10 @@ package object
 import (
 	"context"
 
-	"github.com/chariot-giving/delta/deltatype"
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
+
+	"github.com/chariot-giving/delta/deltatype"
 )
 
 // Object provides an interface to a struct that wraps a resource to be managed
