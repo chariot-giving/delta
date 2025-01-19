@@ -116,16 +116,15 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 		controller.configurer.Configure(c.workers)
 	}
 
-	// add generic informer delegator/scheduler
+	// add generic controller delegators
 	river.AddWorker(c.workers, &controllerInformerScheduler{pool: c.dbPool})
+	river.AddWorker(c.workers, &rescheduler{pool: c.dbPool, logger: c.config.Logger})
 
 	// Add maintenance workers to river workers
-	// 1. expirer (expire resources): easy to make stateless as it's maintenance
+	// 1. expirer (expire resources)
 	river.AddWorker(c.workers, maintenance.NewNamespaceExpirer(c.dbPool, c.config.Logger))
-	// 2. cleaner (delete old resources that are degraded): easy to make stateless as it's maintenance
+	// 2. cleaner (delete old resources that are degraded)
 	river.AddWorker(c.workers, maintenance.NewCleaner(c.dbPool, c.config.Logger))
-	// 3. reenqueuer (re-enqueue expired resources/objects to be worked): easy to make stateless as it's maintenance
-	river.AddWorker(c.workers, maintenance.NewReenqueuer(c.dbPool, c.config.Logger))
 
 	// initialize river client
 	riverConfig := &river.Config{
@@ -154,7 +153,16 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 				},
 			),
 			river.NewPeriodicJob(
-				river.PeriodicInterval(time.Hour*24),
+				river.PeriodicInterval(time.Second*5),
+				func() (river.JobArgs, *river.InsertOpts) {
+					return RescheduleArgs{}, nil
+				},
+				&river.PeriodicJobOpts{
+					RunOnStart: true,
+				},
+			),
+			river.NewPeriodicJob(
+				river.PeriodicInterval(time.Second*5),
 				func() (river.JobArgs, *river.InsertOpts) {
 					return maintenance.ExpireResourceArgs{}, nil
 				},
@@ -163,7 +171,7 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 				},
 			),
 			river.NewPeriodicJob(
-				river.PeriodicInterval(time.Hour*24),
+				river.PeriodicInterval(time.Hour*1),
 				func() (river.JobArgs, *river.InsertOpts) {
 					return maintenance.CleanResourceArgs{
 						DeletedResourceRetentionPeriod:  firstNonZero(c.config.DeletedResourceRetentionPeriod, time.Hour*24),
@@ -194,8 +202,8 @@ func (c *Client) Start(ctx context.Context) error {
 		}
 
 		_, err := sqlc.New(c.dbPool).NamespaceCreateOrSetUpdatedAt(ctx, &sqlc.NamespaceCreateOrSetUpdatedAtParams{
-			Name:           namespace,
-			ResourceExpiry: int32(config.ResourceExpiry),
+			Name:      namespace,
+			ExpiryTtl: int32(config.ResourceExpiry.Milliseconds() / 1000),
 		})
 		if err != nil {
 			return err

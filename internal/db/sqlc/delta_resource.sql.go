@@ -194,6 +194,56 @@ func (q *Queries) ResourceGetByObjectIDAndKind(ctx context.Context, arg *Resourc
 	return &i, err
 }
 
+const resourceResetExpired = `-- name: ResourceResetExpired :many
+UPDATE delta_resource
+SET 
+    state = 'pending',
+    synced_at = NULL,
+    errors = array_append(errors, $1::jsonb)
+WHERE id IN (
+    SELECT id
+    FROM delta_resource
+    WHERE state = 'expired'
+)
+RETURNING id, state, attempt, max_attempts, attempted_at, created_at, synced_at, object_id, kind, namespace, object, hash, metadata, tags, errors
+`
+
+func (q *Queries) ResourceResetExpired(ctx context.Context, error []byte) ([]*DeltaResource, error) {
+	rows, err := q.db.Query(ctx, resourceResetExpired, error)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []*DeltaResource
+	for rows.Next() {
+		var i DeltaResource
+		if err := rows.Scan(
+			&i.ID,
+			&i.State,
+			&i.Attempt,
+			&i.MaxAttempts,
+			&i.AttemptedAt,
+			&i.CreatedAt,
+			&i.SyncedAt,
+			&i.ObjectID,
+			&i.Kind,
+			&i.Namespace,
+			&i.Object,
+			&i.Hash,
+			&i.Metadata,
+			&i.Tags,
+			&i.Errors,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, &i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const resourceSetState = `-- name: ResourceSetState :one
 UPDATE delta_resource
 SET state = CASE

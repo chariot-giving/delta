@@ -80,10 +80,11 @@ FROM deleted_resources;
 SELECT count(*)
 FROM delta_resource
 WHERE state = 'expired';
--- name: ResourceRescheduleExpired :batchmany
+-- name: ResourceResetExpired :many
 UPDATE delta_resource
 SET 
-    state = 'scheduled',
+    state = 'pending',
+    synced_at = NULL,
     errors = array_append(errors, @error::jsonb)
 WHERE id IN (
     SELECT id

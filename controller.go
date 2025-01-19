@@ -58,6 +58,10 @@ func AddControllerSafely[T Object](controllers *Controllers, controller Controll
 			factory:  objectWrapper,
 			informer: controller,
 		},
+		scheduler: &controllerScheduler[T]{
+			pool:    controllers.pool,
+			factory: objectWrapper,
+		},
 	}
 	return controllers.add(object, objectWrapper, workConfigurer)
 }
@@ -128,11 +132,13 @@ type controllerConfigurerInterface interface {
 
 // Contains a generic object param to allow it to call AddWorker with a type
 type controllerConfigurer[T Object] struct {
-	worker   river.Worker[Resource[T]]
-	informer river.Worker[InformArgs[T]]
+	worker    river.Worker[Resource[T]]
+	informer  river.Worker[InformArgs[T]]
+	scheduler river.Worker[ScheduleArgs[T]]
 }
 
 func (cc *controllerConfigurer[T]) Configure(workers *river.Workers) {
 	river.AddWorker(workers, cc.worker)
 	river.AddWorker(workers, cc.informer)
+	river.AddWorker(workers, cc.scheduler)
 }

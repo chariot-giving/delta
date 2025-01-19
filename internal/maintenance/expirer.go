@@ -41,21 +41,20 @@ func (e *namespaceExpirer) Work(ctx context.Context, job *river.Job[ExpireResour
 		return err
 	}
 
-	e.logger.Info("expiring resources for namespaces", "namespaces", namespaces)
-
 	expireParams := make([]*sqlc.ResourceExpireParams, 0, len(namespaces))
 	for _, namespace := range namespaces {
+		// don't expire resources in a namespace that has no expiry ttl
 		if namespace.ExpiryTtl == 0 {
 			continue
 		}
 
+		e.logger.Debug("expiring resources for namespace", "namespace", namespace.Name)
 		expireParams = append(expireParams, &sqlc.ResourceExpireParams{
 			Namespace: namespace.Name,
 			ExpiryTtl: namespace.ExpiryTtl,
 		})
 	}
 
-	// TODO: do we need to call Close() and/or how to handle errors?
 	batch := queries.ResourceExpire(ctx, expireParams)
 
 	batch.Exec(func(i int, err error) {
@@ -63,7 +62,7 @@ func (e *namespaceExpirer) Work(ctx context.Context, job *river.Job[ExpireResour
 			e.logger.Error("failed to expire resources for namespace", "namespace", expireParams[i].Namespace, "error", err)
 			return
 		}
-		e.logger.Info("expired resources for namespace", "namespace", expireParams[i].Namespace, "num_expired", i)
+		e.logger.Debug("expired resources for namespace", "namespace", expireParams[i].Namespace)
 	})
 
 	return nil

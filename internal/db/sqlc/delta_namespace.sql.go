@@ -15,7 +15,7 @@ INSERT INTO delta_namespace(
     created_at,
     metadata,
     name,
-    resource_expiry,
+    expiry_ttl,
     updated_at
 ) VALUES (
     now(),
@@ -30,17 +30,17 @@ RETURNING name, created_at, metadata, updated_at, expiry_ttl
 `
 
 type NamespaceCreateOrSetUpdatedAtParams struct {
-	Metadata       []byte
-	Name           string
-	ResourceExpiry int32
-	UpdatedAt      *time.Time
+	Metadata  []byte
+	Name      string
+	ExpiryTtl int32
+	UpdatedAt *time.Time
 }
 
 func (q *Queries) NamespaceCreateOrSetUpdatedAt(ctx context.Context, arg *NamespaceCreateOrSetUpdatedAtParams) (*DeltaNamespace, error) {
 	row := q.db.QueryRow(ctx, namespaceCreateOrSetUpdatedAt,
 		arg.Metadata,
 		arg.Name,
-		arg.ResourceExpiry,
+		arg.ExpiryTtl,
 		arg.UpdatedAt,
 	)
 	var i DeltaNamespace
