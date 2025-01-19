@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"time"
 
@@ -217,7 +218,7 @@ func (c *Client) Start(ctx context.Context) error {
 		}
 		_, err := queries.NamespaceCreateOrSetUpdatedAt(ctx, &sqlc.NamespaceCreateOrSetUpdatedAtParams{
 			Name:      namespace,
-			ExpiryTtl: int32(config.ResourceExpiry.Milliseconds() / 1000),
+			ExpiryTtl: int32(min(float64(config.ResourceExpiry.Milliseconds()/1000), float64(math.MaxInt32))),
 		})
 		if err != nil {
 			return err
