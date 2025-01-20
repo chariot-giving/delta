@@ -45,15 +45,15 @@ type Informer[T Object] interface {
 type InformArgs[T Object] struct {
 	// ResourceKind is the kind of resource to inform
 	// Required parameter
-	ResourceKind string `river:"unique"`
+	ResourceKind string
 	// ProcessExisting is used to determine if the informer should process existing resources
 	// The informer checks existence based on object.Compare() or hash comparison
 	// Defaults to false (skip existing)
-	ProcessExisting bool `river:"unique"`
+	ProcessExisting bool
 	// RunForeground is used to determine if the informer should run the work in the foreground or background
 	// Defaults to false (background)
 	// TODO: implement this
-	RunForeground bool `river:"unique"`
+	RunForeground bool
 	// Options are optional settings for filtering resources during inform.
 	Options *InformOptions
 	// Object is the resource to inform
@@ -61,20 +61,20 @@ type InformArgs[T Object] struct {
 }
 
 func (i InformArgs[T]) Kind() string {
-	return "delta.inform." + i.ResourceKind
+	return "delta.inform." + i.object.Kind()
 }
 
 func (i InformArgs[T]) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
 		MaxAttempts: 10,
-		Queue:       "controller",
+		Queue:       i.Kind(),
 		UniqueOpts: river.UniqueOpts{
-			ByArgs: true,
+			ByQueue: true,
 			ByState: []rivertype.JobState{
 				rivertype.JobStateAvailable,
 				rivertype.JobStatePending,
-				rivertype.JobStateRunning,
 				rivertype.JobStateRetryable,
+				rivertype.JobStateRunning,
 				rivertype.JobStateScheduled,
 			},
 		},
@@ -224,7 +224,7 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 
 			resourceRow := toResourceRow(&res.DeltaResource)
 			_, err = riverClient.InsertTx(ctx, tx, Resource[T]{Object: object, ResourceRow: &resourceRow}, &river.InsertOpts{
-				Queue:    "resource",
+				Queue:    object.Kind(),
 				Tags:     resourceRow.Tags,
 				Metadata: resourceRow.Metadata,
 			})
@@ -262,7 +262,7 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 
 	resourceRow := toResourceRow(updated)
 	_, err = riverClient.InsertTx(ctx, tx, Resource[T]{Object: object, ResourceRow: &resourceRow}, &river.InsertOpts{
-		Queue:    "resource",
+		Queue:    object.Kind(),
 		Tags:     resourceRow.Tags,
 		Metadata: resourceRow.Metadata,
 	})

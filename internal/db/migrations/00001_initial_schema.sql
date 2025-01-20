@@ -68,9 +68,10 @@ CREATE INDEX delta_resource_metadata_index ON delta_resource USING GIN(metadata)
 CREATE TABLE delta_controller (
     name text PRIMARY KEY NOT NULL,
     last_inform_time TIMESTAMPTZ NOT NULL DEFAULT '1970-01-01 00:00:00Z',
-    metadata jsonb NOT NULL DEFAULT '{}',
+    inform_interval interval NOT NULL DEFAULT '1 hour',
     created_at timestamptz NOT NULL DEFAULT NOW(),
     updated_at timestamptz NOT NULL,
+    metadata jsonb NOT NULL DEFAULT '{}',
     CONSTRAINT name_length CHECK (char_length(name) > 0 AND char_length(name) < 128)
 );
 

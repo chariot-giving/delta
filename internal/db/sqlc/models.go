@@ -61,9 +61,10 @@ func (ns NullDeltaResourceState) Value() (driver.Value, error) {
 type DeltaController struct {
 	Name           string
 	LastInformTime time.Time
-	Metadata       []byte
+	InformInterval time.Duration
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	Metadata       []byte
 }
 
 type DeltaNamespace struct {

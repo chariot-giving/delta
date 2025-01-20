@@ -22,7 +22,7 @@ func (s ScheduleArgs[T]) Kind() string {
 
 func (s ScheduleArgs[T]) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
-		Queue: "controller",
+		Queue: s.object.Kind(),
 	}
 }
 

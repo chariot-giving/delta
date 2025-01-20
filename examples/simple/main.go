@@ -38,7 +38,7 @@ func main() {
 			},
 		},
 		Controllers:            controllers,
-		ResourceInformInterval: 30 * time.Second, // re-run controller Informers every 10 seconds
+		ResourceInformInterval: 30 * time.Second, // re-run controller Informers every 30 seconds
 		MaintenanceJobInterval: 5 * time.Second,  // run maintenance jobs every 5 seconds
 	})
 	if err != nil {

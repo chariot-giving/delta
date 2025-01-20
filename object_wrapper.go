@@ -66,19 +66,17 @@ func (w *wrapperObject[T]) Enqueue(ctx context.Context, tx pgx.Tx, client *river
 
 	resource := *w.resource
 
+	insertOpts := &river.InsertOpts{
+		Queue:    resource.Kind(), // this ensures the job will be picked up by a client who is configured with this controller
+		Tags:     resource.Tags,
+		Metadata: resource.Metadata,
+	}
+
 	if tx != nil {
-		_, err := client.InsertTx(ctx, tx, resource, &river.InsertOpts{
-			Queue:    "resource",
-			Tags:     resource.Tags,
-			Metadata: resource.Metadata,
-		})
+		_, err := client.InsertTx(ctx, tx, resource, insertOpts)
 		return err
 	}
 
-	_, err := client.Insert(ctx, resource, &river.InsertOpts{
-		Queue:    "resource",
-		Tags:     resource.Tags,
-		Metadata: resource.Metadata,
-	})
+	_, err := client.Insert(ctx, resource, insertOpts)
 	return err
 }

@@ -3,7 +3,6 @@ package delta
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -13,9 +12,7 @@ import (
 	"github.com/chariot-giving/delta/internal/middleware"
 )
 
-type InformScheduleArgs struct {
-	InformInterval time.Duration
-}
+type InformScheduleArgs struct{}
 
 func (s InformScheduleArgs) Kind() string {
 	return "delta.scheduler.inform"
@@ -34,20 +31,17 @@ func (s InformScheduleArgs) InsertOpts() river.InsertOpts {
 // all pointing and using the same delta database/schema.
 // You can think about it as a periodic job delegator/scheduler.
 type controllerInformerScheduler struct {
-	pool *pgxpool.Pool
+	pool        *pgxpool.Pool
+	riverClient *river.Client[pgx.Tx]
 	river.WorkerDefaults[InformScheduleArgs]
 }
 
 func (w *controllerInformerScheduler) Work(ctx context.Context, job *river.Job[InformScheduleArgs]) error {
 	logger := middleware.LoggerFromContext(ctx)
-	riverClient, err := river.ClientFromContextSafely[pgx.Tx](ctx)
-	if err != nil {
-		return err
-	}
 
 	queries := sqlc.New(w.pool)
 
-	controllers, err := queries.ControllerListReady(ctx, job.Args.InformInterval)
+	controllers, err := queries.ControllerListReady(ctx)
 	if err != nil {
 		return err
 	}
@@ -59,13 +53,15 @@ func (w *controllerInformerScheduler) Work(ctx context.Context, job *river.Job[I
 			Since: &controller.LastInformTime,
 		}
 
-		res, err := riverClient.Insert(ctx, InformArgs[kindObject]{
+		res, err := w.riverClient.Insert(ctx, InformArgs[kindObject]{
 			ResourceKind:    controller.Name,
 			ProcessExisting: false,
 			RunForeground:   false,
 			Options:         &opts,
 			object:          kindObject{kind: controller.Name},
-		}, nil)
+		}, &river.InsertOpts{
+			Queue: controller.Name, // this ensures the job will be picked up by a client who is configured with this controller
+		})
 		if err != nil {
 			return fmt.Errorf("failed to insert inform job: %w", err)
 		}
