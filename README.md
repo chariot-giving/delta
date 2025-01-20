@@ -197,3 +197,10 @@ Below you will a high-level diagram of the Delta architecture
 and how an application interacts with the Delta system.
 
 ![Architecture](./docs/images/architecture.png)
+
+## Acknowledgements
+
+This project uses the following dependencies:
+
+- [River](https://github.com/riverqueue/river), which is licensed under the Mozilla Public License 2.0 (MPL-2.0).
+- [pgx](https://github.com/jackc/pgx), which is licensed under the MIT License.
