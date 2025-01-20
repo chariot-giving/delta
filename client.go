@@ -116,10 +116,15 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 	}
 
 	// add generic controller delegators
-	if err := river.AddWorkerSafely(client.workers, &controllerInformerScheduler{pool: client.dbPool}); err != nil {
+	insertOnlyRiverClient, err := river.NewClient(riverpgxv5.New(client.dbPool), &river.Config{})
+	if err != nil {
+		return nil, fmt.Errorf("error creating river client: %w", err)
+	}
+
+	if err := river.AddWorkerSafely(client.workers, &controllerInformerScheduler{pool: client.dbPool, riverClient: insertOnlyRiverClient}); err != nil {
 		return nil, fmt.Errorf("error adding controller informer scheduler worker: %w", err)
 	}
-	if err := river.AddWorkerSafely(client.workers, &rescheduler{pool: client.dbPool}); err != nil {
+	if err := river.AddWorkerSafely(client.workers, &rescheduler{pool: client.dbPool, riverClient: insertOnlyRiverClient}); err != nil {
 		return nil, fmt.Errorf("error adding rescheduler worker: %w", err)
 	}
 
@@ -156,9 +161,7 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 			river.NewPeriodicJob(
 				river.PeriodicInterval(firstNonZero(client.config.MaintenanceJobInterval, time.Minute*1)),
 				func() (river.JobArgs, *river.InsertOpts) {
-					return InformScheduleArgs{
-						InformInterval: firstNonZero(client.config.ResourceInformInterval, time.Hour*1),
-					}, nil
+					return InformScheduleArgs{}, nil
 				},
 				&river.PeriodicJobOpts{
 					RunOnStart: true,
@@ -226,10 +229,12 @@ func (c *Client) Start(ctx context.Context) error {
 	}
 
 	// seed the initial controllers
+	informInterval := firstNonZero(c.config.ResourceInformInterval, time.Hour*1)
 	for _, controller := range c.config.Controllers.controllerMap {
 		_, err := queries.ControllerCreateOrSetUpdatedAt(ctx, &sqlc.ControllerCreateOrSetUpdatedAtParams{
-			Name:     controller.object.Kind(),
-			Metadata: json.RawMessage(`{}`),
+			Name:           controller.object.Kind(),
+			Metadata:       json.RawMessage(`{}`),
+			InformInterval: &informInterval,
 		})
 		if err != nil {
 			return err
@@ -347,8 +352,6 @@ func (c *Client) InformTx(ctx context.Context, tx pgx.Tx, object Object, opts *I
 
 // ScheduleInform schedules an inform job for a controller to sync resources.
 func (c *Client) ScheduleInform(ctx context.Context, params ScheduleInformParams, informOpts *InformOptions) error {
-	// queries := sqlc.New(c.dbPool)
-
 	_, err := c.client.Insert(ctx, InformArgs[kindObject]{
 		ResourceKind:    params.ResourceKind,
 		ProcessExisting: params.ProcessExisting,
