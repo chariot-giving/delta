@@ -36,11 +36,6 @@ type rescheduler struct {
 
 func (r *rescheduler) Work(ctx context.Context, job *river.Job[RescheduleResourceArgs]) error {
 	logger := middleware.LoggerFromContext(ctx)
-	// need to use insert only river client
-	// riverClient, err := river.ClientFromContextSafely[pgx.Tx](ctx)
-	// if err != nil {
-	// 	return err
-	// }
 
 	now := time.Now().UTC()
 	errorData, err := json.Marshal(deltatype.AttemptError{
@@ -75,6 +70,9 @@ func (r *rescheduler) Work(ctx context.Context, job *river.Job[RescheduleResourc
 				Args: ScheduleArgs[kindObject]{
 					ResourceID: resource.ID,
 					object:     kindObject{kind: resource.Kind},
+				},
+				InsertOpts: &river.InsertOpts{
+					Queue: resource.Kind,
 				},
 			}
 		}

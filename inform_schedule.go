@@ -12,8 +12,7 @@ import (
 	"github.com/chariot-giving/delta/internal/middleware"
 )
 
-type InformScheduleArgs struct {
-}
+type InformScheduleArgs struct{}
 
 func (s InformScheduleArgs) Kind() string {
 	return "delta.scheduler.inform"
@@ -39,11 +38,6 @@ type controllerInformerScheduler struct {
 
 func (w *controllerInformerScheduler) Work(ctx context.Context, job *river.Job[InformScheduleArgs]) error {
 	logger := middleware.LoggerFromContext(ctx)
-	// need to use insert only river client
-	// riverClient, err := river.ClientFromContextSafely[pgx.Tx](ctx)
-	// if err != nil {
-	// 	return err
-	// }
 
 	queries := sqlc.New(w.pool)
 
@@ -65,7 +59,9 @@ func (w *controllerInformerScheduler) Work(ctx context.Context, job *river.Job[I
 			RunForeground:   false,
 			Options:         &opts,
 			object:          kindObject{kind: controller.Name},
-		}, nil)
+		}, &river.InsertOpts{
+			Queue: controller.Name, // this ensures the job will be picked up by a client who is configured with this controller
+		})
 		if err != nil {
 			return fmt.Errorf("failed to insert inform job: %w", err)
 		}

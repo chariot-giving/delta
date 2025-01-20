@@ -138,19 +138,28 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 		return nil, fmt.Errorf("error adding cleaner worker: %w", err)
 	}
 
+	queues := map[string]river.QueueConfig{
+		"controller": {
+			MaxWorkers: 3,
+		},
+		"maintenance": {
+			MaxWorkers: 1,
+		},
+	}
+
+	// dynamically add controller resource queues
+	// this ensures the delta clients that are configured with this controller
+	// will pick up the resource jobs from the underlying river queue
+	// see: https://github.com/riverqueue/river/discussions/725
+	for _, controller := range config.Controllers.controllerMap {
+		queues[controller.object.Kind()] = river.QueueConfig{
+			MaxWorkers: 3,
+		}
+	}
+
 	// initialize river client
 	riverConfig := &river.Config{
-		Queues: map[string]river.QueueConfig{
-			"controller": {
-				MaxWorkers: 3,
-			},
-			"resource": {
-				MaxWorkers: 5,
-			},
-			"maintenance": {
-				MaxWorkers: 1,
-			},
-		},
+		Queues:  queues,
 		Workers: client.workers,
 		// Logger:  c.config.Logger.With("name", "riverqueue"),
 		WorkerMiddleware: []rivertype.WorkerMiddleware{
@@ -229,6 +238,7 @@ func (c *Client) Start(ctx context.Context) error {
 	}
 
 	// seed the initial controllers
+	// TODO: make the resource inform interval configurable per controller
 	informInterval := firstNonZero(c.config.ResourceInformInterval, time.Hour*1)
 	for _, controller := range c.config.Controllers.controllerMap {
 		_, err := queries.ControllerCreateOrSetUpdatedAt(ctx, &sqlc.ControllerCreateOrSetUpdatedAtParams{

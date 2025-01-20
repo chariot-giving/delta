@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -29,7 +30,7 @@ func main() {
 
 	deltaClient, err := delta.NewClient(db, delta.Config{
 		Logger: slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-			Level: slog.LevelWarn,
+			Level: slog.LevelInfo,
 		})),
 		Namespaces: map[string]delta.NamespaceConfig{
 			"stripe": {
@@ -37,7 +38,7 @@ func main() {
 			},
 		},
 		Controllers:            controllers,
-		ResourceInformInterval: 1 * time.Hour,    // re-run controller Informers every 1 hour
+		ResourceInformInterval: 60 * time.Second, // re-run controller Informers every 60 seconds
 		MaintenanceJobInterval: 60 * time.Second, // run maintenance jobs every 60 seconds
 	})
 	if err != nil {
@@ -124,6 +125,17 @@ func (c *customerController) Inform(ctx context.Context, opts *delta.InformOptio
 			if startingAfter != "" {
 				url += "&starting_after=" + startingAfter
 			}
+			// Add created.gt parameter if Since is specified (Stripe's API uses unix seconds)
+			if opts != nil && opts.Since != nil {
+				url += "&created.gt=" + strconv.FormatInt(opts.Since.Unix(), 10)
+			}
+			// Stripe allows limit between 1 and 100
+			if opts != nil && opts.Limit > 0 {
+				url += "&limit=" + strconv.Itoa(min(opts.Limit, 100))
+			} else {
+				// default to 100
+				url += "&limit=100"
+			}
 
 			req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 			if err != nil {
@@ -134,6 +146,7 @@ func (c *customerController) Inform(ctx context.Context, opts *delta.InformOptio
 			// Add Stripe authentication header
 			req.Header.Add("Authorization", "Bearer "+os.Getenv("STRIPE_SECRET_KEY"))
 
+			log.Printf("Making request to %s...", url)
 			resp, err := client.Do(req)
 			if err != nil {
 				log.Printf("Error making request: %v", err)
@@ -153,6 +166,8 @@ func (c *customerController) Inform(ctx context.Context, opts *delta.InformOptio
 				log.Printf("Error decoding response: %v", err)
 				return
 			}
+
+			log.Printf("Received %d customers", len(result.Data))
 
 			// Send customers to queue
 			for _, customer := range result.Data {
