@@ -1,103 +1,103 @@
 name: CI
 
 on:
-    push:
-      branches:
-        - main
-    pull_request:
+  push:
+    branches:
+      - main
+  pull_request:
 
 jobs:
-    build_and_test:
-        runs-on: ubuntu-latest
-        strategy:
-            matrix:
-                # Run the 4 latest Postgres versions against the latest Go version:
-                go-version:
-                - "1.23"
-                postgres-version: [14, 15, 16, 17]
-                include:
-                # Also run previous Go version against the latest Postgres version:
-                - go-version: "1.22"
-                  postgres-version: 17
-            fail-fast: false
-        timeout-minutes: 5
+  build_and_test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Run the 4 latest Postgres versions against the latest Go version:
+        go-version:
+          - "1.23"
+        postgres-version: [14, 15, 16, 17]
+        include:
+          # Also run previous Go version against the latest Postgres version:
+          - go-version: "1.22"
+            postgres-version: 17
+      fail-fast: false
+    timeout-minutes: 5
 
-        services:
-            postgres:
-                image: postgres:${{ matrix.postgres-version }}
-                env:
-                    POSTGRES_PASSWORD: postgres
-                options: >-
-                    --health-cmd pg_isready
-                    --health-interval 2s
-                    --health-timeout 5s
-                    --health-retries 5
-                ports:
-                - 5432:5432
-
-        steps:
-            - uses: actions/checkout@v4
-
-            - name: Setup Go ${{ matrix.go-version }}
-              uses: actions/setup-go@v5
-              with:
-                go-version: ${{ matrix.go-version }}
-
-            - name: Display Go version
-              run: go version
-
-            - name: Test
-              working-directory: .
-              run: go test -p 1 -race ./... -timeout 2m
-    
-    golangci:
-        name: lint
-        runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres-version }}
         env:
-            GOLANGCI_LINT_VERSION: v1.61.0
-        permissions:
-            contents: read
-            pull-requests: read
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
 
-        steps:
-            - uses: actions/setup-go@v5
-              with:
-                go-version: "stable"
-                check-latest: true
+    steps:
+      - uses: actions/checkout@v4
 
-            - name: Checkout
-              uses: actions/checkout@v4
+      - name: Setup Go ${{ matrix.go-version }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
 
-            - name: Lint
-              uses: golangci/golangci-lint-action@v4
-              with:
-                # golangci-lint needs to be run separately for every Go module, and
-                # its GitHub Action doesn't provide any way to do that. Have it fetch
-                # the golangci-lint binary, trick it into not running by sending only
-                # `--help`, then run the full set of lints below. DO NOT run separate
-                # modules as separate golangci-lint-action steps. Its post run caching
-                # can be extremely slow, and that's amplified in a very painful way if
-                # it needs to be run multiple times.
-                args: --help
-                version: ${{ env.GOLANGCI_LINT_VERSION }}
+      - name: Display Go version
+        run: go version
 
-            - name: Run lint
-              run: make lint
+      - name: Test
+        working-directory: .
+        run: go test -p 1 -race ./... -timeout 2m
+  
+  golangci:
+    name: lint
+    runs-on: ubuntu-latest
+    env:
+      GOLANGCI_LINT_VERSION: v1.61.0
+    permissions:
+      contents: read
+      pull-requests: read
 
-    migration_and_sqlc_verify:
-        runs-on: ubuntu-latest
-        timeout-minutes: 2
+    steps:
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+          check-latest: true
 
-        steps:
-        - name: Checkout
-          uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-        - name: Setup sqlc
-          uses: sqlc-dev/setup-sqlc@v4
-          with:
-            sqlc-version: "1.27.0"
+      - name: Lint
+        uses: golangci/golangci-lint-action@v4
+        with:
+          # golangci-lint needs to be run separately for every Go module, and
+          # its GitHub Action doesn't provide any way to do that. Have it fetch
+          # the golangci-lint binary, trick it into not running by sending only
+          # `--help`, then run the full set of lints below. DO NOT run separate
+          # modules as separate golangci-lint-action steps. Its post run caching
+          # can be extremely slow, and that's amplified in a very painful way if
+          # it needs to be run multiple times.
+          args: --help
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
 
-        - name: Verify sqlc generated code
-          run: |
-            echo "Make sure that all sqlc changes are checked in"
-            make verify/sqlc
+      - name: Run lint
+        run: make lint
+
+  migration_and_sqlc_verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup sqlc
+        uses: sqlc-dev/setup-sqlc@v4
+        with:
+          sqlc-version: "1.27.0"
+
+      - name: Verify sqlc generated code
+        run: |
+          echo "Make sure that all sqlc changes are checked in"
+          make verify/sqlc
