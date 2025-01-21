@@ -7,6 +7,7 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -110,6 +111,13 @@ func (c *customerController) Work(ctx context.Context, resource *delta.Resource[
 
 func (c *customerController) Inform(ctx context.Context, opts *delta.InformOptions) (<-chan StripeCustomer, error) {
 	queue := make(chan StripeCustomer)
+
+	uri, err := url.Parse("https://api.stripe.com/v1/customers")
+	if err != nil {
+		log.Printf("Error parsing URL: %v", err)
+		return nil, err
+	}
+
 	go func() {
 		defer close(queue)
 		log.Println("Informing stripe customers...")
@@ -120,24 +128,26 @@ func (c *customerController) Inform(ctx context.Context, opts *delta.InformOptio
 		hasMore := true
 		startingAfter := ""
 
+		query := url.Values{}
 		for hasMore {
-			url := "https://api.stripe.com/v1/customers?limit=100"
 			if startingAfter != "" {
-				url += "&starting_after=" + startingAfter
+				query.Add("starting_after", startingAfter)
 			}
-			// Add created.gt parameter if Since is specified (Stripe's API uses unix seconds)
-			if opts != nil && opts.Since != nil {
-				url += "&created.gt=" + strconv.FormatInt(opts.Since.Unix(), 10)
+			// Add created[gt] parameter if Since is specified (Stripe's API uses unix seconds)
+			if opts != nil && opts.Since != nil && !opts.Since.IsZero() {
+				query.Add("created[gt]", strconv.FormatInt(opts.Since.Unix(), 10))
 			}
 			// Stripe allows limit between 1 and 100
 			if opts != nil && opts.Limit > 0 {
-				url += "&limit=" + strconv.Itoa(min(opts.Limit, 100))
+				query.Add("limit", strconv.Itoa(min(opts.Limit, 100)))
 			} else {
 				// default to 100
-				url += "&limit=100"
+				query.Add("limit", "100")
 			}
 
-			req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+			uri.RawQuery = query.Encode()
+
+			req, err := http.NewRequestWithContext(ctx, "GET", uri.String(), nil)
 			if err != nil {
 				log.Printf("Error creating request: %v", err)
 				return
@@ -146,7 +156,7 @@ func (c *customerController) Inform(ctx context.Context, opts *delta.InformOptio
 			// Add Stripe authentication header
 			req.Header.Add("Authorization", "Bearer "+os.Getenv("STRIPE_SECRET_KEY"))
 
-			log.Printf("Making request to %s...", url)
+			log.Printf("Making request to %s...", uri.String())
 			resp, err := client.Do(req)
 			if err != nil {
 				log.Printf("Error making request: %v", err)
