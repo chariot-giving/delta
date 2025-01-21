@@ -12,7 +12,7 @@ Each controller tries to move the current database state closer to the desired s
 
 ### Controller Pattern
 
-A controller tracks at least one Delta resource type.
+A controller tracks exactly one Delta resource type.
 These objects are defined as structs that implement the `Object` interface.
 The controller(s) for that resource are responsible for making the current state come closer to that desired state.
 
