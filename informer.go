@@ -61,7 +61,7 @@ type InformArgs[T Object] struct {
 }
 
 func (i InformArgs[T]) Kind() string {
-	return "delta.inform." + i.object.Kind()
+	return i.object.Kind()
 }
 
 func (i InformArgs[T]) InsertOpts() river.InsertOpts {

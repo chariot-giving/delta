@@ -7,6 +7,15 @@ place, and create an initial controller and client to start managing resources.
 
 Delta requires an existing PostgreSQL database, and is most commonly used with pgx.
 
+```sql
+create database delta;
+\c delta
+create user delta with password 'password';
+grant all privileges on database delta to delta;
+create schema delta;
+grant all on schema delta to delta;
+```
+
 ## Installation
 
 To install Delta, run the following in the directory of a Go project (where a go.mod file is present):
