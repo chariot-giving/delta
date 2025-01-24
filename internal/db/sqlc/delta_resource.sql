@@ -51,7 +51,7 @@ SET state = $4,
     max_attempts = $9
 RETURNING sqlc.embed(delta_resource), 
     (xmax = 0) as is_insert;
--- name: ResourceExpire :batchexec
+-- name: ResourceExpire :execrows
 -- Update the state of delta_resources to 'expired' based on expiryTTL
 UPDATE delta_resource
 SET state = 'expired'

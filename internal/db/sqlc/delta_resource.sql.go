@@ -129,6 +129,28 @@ func (q *Queries) ResourceDeleteBefore(ctx context.Context, arg *ResourceDeleteB
 	return count, err
 }
 
+const resourceExpire = `-- name: ResourceExpire :execrows
+UPDATE delta_resource
+SET state = 'expired'
+WHERE namespace = $1
+  AND state NOT IN ('expired', 'deleted') -- Only update resources that are not already expired or deleted
+  AND EXTRACT(EPOCH FROM (NOW() - synced_at)) > $2::integer
+`
+
+type ResourceExpireParams struct {
+	Namespace string
+	ExpiryTtl int32
+}
+
+// Update the state of delta_resources to 'expired' based on expiryTTL
+func (q *Queries) ResourceExpire(ctx context.Context, arg *ResourceExpireParams) (int64, error) {
+	result, err := q.db.Exec(ctx, resourceExpire, arg.Namespace, arg.ExpiryTtl)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const resourceGetByID = `-- name: ResourceGetByID :one
 SELECT id, state, attempt, max_attempts, attempted_at, created_at, synced_at, object_id, kind, namespace, object, hash, metadata, tags, errors
 FROM delta_resource

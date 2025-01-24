@@ -45,6 +45,22 @@ type Config struct {
 	// than managing them. If it's specified, then Controllers must also be given.
 	Namespaces map[string]NamespaceConfig
 
+	// ResourceWorkTimeout is the maximum amount of time a controlle worker is allowed to run before its
+	// context is cancelled. A timeout of zero means ResourceWorkTimeout will be
+	// used, whereas a value of -1 means the controller's context will not be cancelled
+	// unless the Client is shutting down.
+	//
+	// Defaults to 1 minute.
+	ResourceWorkTimeout time.Duration
+
+	// ControllerInformTimeout is the maximum amount of time a controller informer is allowed to run before its
+	// context is cancelled. A timeout of zero means ControllerInformTimeout will be
+	// used, whereas a value of -1 means the controller's context will not be cancelled
+	// unless the Client is shutting down.
+	//
+	// Defaults to 1 minutes.
+	ControllerInformTimeout time.Duration
+
 	// MaintenanceJobInterval is the interval at which the maintenance jobs
 	// will run.
 	//
@@ -102,6 +118,9 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 	}
 	config.Logger = logger
 
+	config.ResourceWorkTimeout = firstNonZero(config.ResourceWorkTimeout, time.Minute*1)
+	config.ControllerInformTimeout = firstNonZero(config.ControllerInformTimeout, time.Minute*1)
+
 	client := &Client{
 		config:  &config,
 		dbPool:  dbPool,
@@ -115,16 +134,10 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 		}
 	}
 
-	// add generic controller delegators
-	insertOnlyRiverClient, err := river.NewClient(riverpgxv5.New(client.dbPool), &river.Config{})
-	if err != nil {
-		return nil, fmt.Errorf("error creating river client: %w", err)
-	}
-
-	if err := river.AddWorkerSafely(client.workers, &controllerInformerScheduler{pool: client.dbPool, riverClient: insertOnlyRiverClient}); err != nil {
+	if err := river.AddWorkerSafely(client.workers, &controllerInformerScheduler{pool: client.dbPool}); err != nil {
 		return nil, fmt.Errorf("error adding controller informer scheduler worker: %w", err)
 	}
-	if err := river.AddWorkerSafely(client.workers, &rescheduler{pool: client.dbPool, riverClient: insertOnlyRiverClient}); err != nil {
+	if err := river.AddWorkerSafely(client.workers, &rescheduler{pool: client.dbPool}); err != nil {
 		return nil, fmt.Errorf("error adding rescheduler worker: %w", err)
 	}
 
@@ -159,8 +172,9 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 
 	// initialize river client
 	riverConfig := &river.Config{
-		Queues:  queues,
-		Workers: client.workers,
+		Queues:              queues,
+		Workers:             client.workers,
+		SkipUnknownJobCheck: true,
 		// Logger:  c.config.Logger.With("name", "riverqueue"),
 		WorkerMiddleware: []rivertype.WorkerMiddleware{
 			middleware.NewLoggingMiddleware(client.config.Logger),

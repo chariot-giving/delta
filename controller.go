@@ -1,6 +1,7 @@
 package delta
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/riverqueue/river"
@@ -90,6 +91,12 @@ func NewControllers() *Controllers {
 func (c Controllers) add(object Object, factory object.ObjectFactory, configurer controllerConfigurerInterface) error {
 	kind := object.Kind()
 
+	// Validate the kind before adding it to the map.
+	// This is important because the kind is used as the queue name.
+	if err := validateObjectKind(kind); err != nil {
+		return err
+	}
+
 	if _, ok := c.controllerMap[kind]; ok {
 		return fmt.Errorf("controller for kind %q is already registered", kind)
 	}
@@ -100,6 +107,19 @@ func (c Controllers) add(object Object, factory object.ObjectFactory, configurer
 		configurer:    configurer,
 	}
 
+	return nil
+}
+
+func validateObjectKind(kind string) error {
+	if kind == "" {
+		return errors.New("kind cannot be empty")
+	}
+	if len(kind) > 64 {
+		return errors.New("kind cannot be longer than 64 characters")
+	}
+	if !nameRegex.MatchString(kind) {
+		return fmt.Errorf("kind is invalid, expected letters and numbers separated by underscores or hyphens: %q", kind)
+	}
 	return nil
 }
 

@@ -29,13 +29,16 @@ func (r RescheduleResourceArgs) InsertOpts() river.InsertOpts {
 }
 
 type rescheduler struct {
-	pool        *pgxpool.Pool
-	riverClient *river.Client[pgx.Tx]
+	pool *pgxpool.Pool
 	river.WorkerDefaults[RescheduleResourceArgs]
 }
 
 func (r *rescheduler) Work(ctx context.Context, job *river.Job[RescheduleResourceArgs]) error {
 	logger := middleware.LoggerFromContext(ctx)
+	riverClient, err := river.ClientFromContextSafely[pgx.Tx](ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get river client: %w", err)
+	}
 
 	now := time.Now().UTC()
 	errorData, err := json.Marshal(deltatype.AttemptError{
@@ -77,7 +80,7 @@ func (r *rescheduler) Work(ctx context.Context, job *river.Job[RescheduleResourc
 			}
 		}
 
-		_, err = r.riverClient.InsertManyTx(ctx, tx, insertParams)
+		_, err = riverClient.InsertManyTx(ctx, tx, insertParams)
 		if err != nil {
 			logger.Error("error inserting rescheduled resources", "error", err)
 			return err

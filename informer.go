@@ -39,8 +39,26 @@ type InformOptions struct {
 // Informer is an interface that provides a way to inform the controller of resources.
 type Informer[T Object] interface {
 	// Inform informs the controller of resources.
+	//
+	// // It is important to respect context cancellation to enable
+	// the delta client to respond to shutdown requests.
+	// There is no way to cancel a running controller that does not respect
+	// context cancellation, other than terminating the process.
 	Inform(ctx context.Context, opts *InformOptions) (<-chan T, error)
+	// InformTimeout is the maximum amount of time the inform job is allowed to run before
+	// its context is cancelled. A timeout of zero (the default) means the job
+	// will inherit the Client-level timeout (defaults to 1 minute).
+	// A timeout of -1 means the job's context will never time out.
+	InformTimeout(args *InformArgs[T]) time.Duration
 }
+
+// InformerDefaults is an empty struct that can be embedded in your controller
+// struct to make it fulfill the Informer interface with default values.
+type InformerDefaults[T Object] struct{}
+
+// Timeout returns the inform arg-specific timeout. Override this method to set a
+// inform-specific timeout, otherwise the Client-level timeout will be applied.
+func (w InformerDefaults[T]) InformTimeout(*InformArgs[T]) time.Duration { return 0 }
 
 type InformArgs[T Object] struct {
 	// ResourceKind is the kind of resource to inform
@@ -111,43 +129,53 @@ func (i *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformA
 		Limit:   firstNonZero(job.Args.Options.Limit),
 	}
 
-	// Set a 5-minute deadline for the entire operation
-	ctx, cancel := context.WithTimeout(ctx, i.Timeout(job))
-	defer cancel()
+	informFunc := func(ctx context.Context) error {
+		timeout := i.informer.InformTimeout(&job.Args)
+		if timeout == 0 {
+			// use the client-level timeout if the resource doesn't specify one
+			timeout = client.config.ControllerInformTimeout
+		}
 
-	queue, err := i.informer.Inform(ctx, &informOpts)
-	if err != nil {
-		return fmt.Errorf("failed to inform controller: %w", err)
-	}
+		if timeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, timeout)
+			defer cancel()
+		}
 
-	for {
-		select {
-		case obj, ok := <-queue:
-			if !ok {
-				// happy path: successfully informed all resources
-				if !job.Args.ProcessExisting {
-					// only update the controller last inform time if we aren't processing existing resources
-					err := queries.ControllerSetLastInformTime(ctx, controller.Name)
-					if err != nil {
-						return err
+		queue, err := i.informer.Inform(ctx, &informOpts)
+		if err != nil {
+			return fmt.Errorf("failed to inform controller: %w", err)
+		}
+
+		for {
+			select {
+			case obj, ok := <-queue:
+				if !ok {
+					// happy path: successfully informed all resources
+					if !job.Args.ProcessExisting {
+						// only update the controller last inform time if we aren't processing existing resources
+						err := queries.ControllerSetLastInformTime(ctx, controller.Name)
+						if err != nil {
+							return err
+						}
 					}
+					return nil
 				}
-				return nil
+				if err := i.processObject(ctx, obj, &job.Args); err != nil {
+					return err
+				}
+			case <-ctx.Done():
+				return fmt.Errorf("work deadline exceeded: %w", ctx.Err())
 			}
-			if err := i.processObject(ctx, obj, &job.Args); err != nil {
-				return err
-			}
-		case <-ctx.Done():
-			return fmt.Errorf("work deadline exceeded: %w", ctx.Err())
 		}
 	}
+
+	return informFunc(ctx)
 }
 
 func (i *controllerInformer[T]) Timeout(job *river.Job[InformArgs[T]]) time.Duration {
-	if job.Args.ProcessExisting {
-		return 5 * time.Minute
-	}
-	return 1 * time.Minute
+	// we enforce our own timeout so we want to remove River's underlying timeout on the job
+	return -1
 }
 
 func (i *controllerInformer[T]) processObject(ctx context.Context, object T, args *InformArgs[T]) error {
@@ -244,7 +272,7 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 	}
 	if compare == 0 && resource.State == sqlc.DeltaResourceStateSynced && !args.ProcessExisting {
 		// if the objects are the same, the resource is synced, and we don't want to process existing, skip
-		logger.Warn("skipping already processed object", "resource_id", resource.ID, "resource_kind", resource.Kind)
+		logger.Warn("skipping already processed object", "resource_id", resource.ID, "resource_kind", resource.Kind, "object_id", resource.ObjectID)
 		return nil
 	}
 

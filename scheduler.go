@@ -2,6 +2,8 @@ package delta
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
@@ -56,12 +58,22 @@ func (w *controllerScheduler[T]) Work(ctx context.Context, job *river.Job[Schedu
 
 	queries := sqlc.New(tx)
 
+	// schedule the resource and mark it as unsynced
 	resource, err := queries.ResourceSetState(ctx, &sqlc.ResourceSetStateParams{
-		ID:      job.Args.ResourceID,
-		Column1: true,
-		State:   sqlc.DeltaResourceStateScheduled,
+		ID:       job.Args.ResourceID,
+		Column1:  true,
+		State:    sqlc.DeltaResourceStateScheduled,
+		Column3:  true,
+		SyncedAt: nil,
 	})
 	if err != nil {
+		// handle the case where a delta resource was manually deleted from the database but
+		// a river job was still scheduled for it.
+		// in this case we cancel the job since the resource will be replaced by a new resource record.
+		if errors.Is(err, pgx.ErrNoRows) {
+			logger.Debug("resource not found; canceling underlying job", "resource_id", job.Args.ResourceID)
+			return river.JobCancel(fmt.Errorf("resource %d does not exist; it may have been deleted", job.Args.ResourceID))
+		}
 		return err
 	}
 

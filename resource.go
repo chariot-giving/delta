@@ -14,6 +14,7 @@ type Resource[T Object] struct {
 	Object T
 }
 
+// Kind is specific to the river package and NOT meant to be used as the Resource/Object Kind.
 func (r Resource[T]) Kind() string {
 	return "delta.resource." + r.Object.Kind()
 }

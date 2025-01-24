@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
@@ -58,6 +59,11 @@ func (w *wrapperObject[T]) Work(ctx context.Context) error {
 	return w.controller.Work(ctx, w.resource)
 }
 
+// Timeout implements Object.Timeout.
+func (w *wrapperObject[T]) Timeout() time.Duration {
+	return w.controller.ResourceTimeout(w.resource)
+}
+
 // Enqueue implements Object.Enqueue.
 func (w *wrapperObject[T]) Enqueue(ctx context.Context, tx pgx.Tx, client *river.Client[pgx.Tx]) error {
 	if w.resource == nil {
@@ -67,16 +73,20 @@ func (w *wrapperObject[T]) Enqueue(ctx context.Context, tx pgx.Tx, client *river
 	resource := *w.resource
 
 	insertOpts := &river.InsertOpts{
-		Queue:    resource.Kind(), // this ensures the job will be picked up by a client who is configured with this controller
+		Queue:    resource.ObjectKind, // this ensures the job will be picked up by a client who is configured with this controller
 		Tags:     resource.Tags,
 		Metadata: resource.Metadata,
 	}
 
 	if tx != nil {
-		_, err := client.InsertTx(ctx, tx, resource, insertOpts)
-		return err
+		if _, err := client.InsertTx(ctx, tx, resource, insertOpts); err != nil {
+			return err
+		}
+		return nil
 	}
 
-	_, err := client.Insert(ctx, resource, insertOpts)
-	return err
+	if _, err := client.Insert(ctx, resource, insertOpts); err != nil {
+		return err
+	}
+	return nil
 }

@@ -102,6 +102,8 @@ func (c StripeCustomer) InformOpts() delta.InformOpts {
 }
 
 type customerController struct {
+	delta.WorkerDefaults[StripeCustomer]
+	delta.InformerDefaults[StripeCustomer]
 }
 
 func (c *customerController) Work(ctx context.Context, resource *delta.Resource[StripeCustomer]) error {

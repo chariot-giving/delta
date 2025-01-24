@@ -2,6 +2,7 @@ package object
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
@@ -20,6 +21,7 @@ type Object interface {
 	UnmarshalResource() error
 	Compare(other any) (int, bool)
 	Work(ctx context.Context) error
+	Timeout() time.Duration
 	Enqueue(ctx context.Context, tx pgx.Tx, client *river.Client[pgx.Tx]) error
 }
 

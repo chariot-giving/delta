@@ -103,6 +103,8 @@ func (e Email) InformOpts() delta.InformOpts {
 }
 
 type emailController struct {
+	delta.WorkerDefaults[Email]
+	delta.InformerDefaults[Email]
 }
 
 func (c *emailController) Work(ctx context.Context, resource *delta.Resource[Email]) error {
@@ -156,6 +158,8 @@ func (m Mail) InformOpts() delta.InformOpts {
 }
 
 type mailController struct {
+	delta.WorkerDefaults[Mail]
+	delta.InformerDefaults[Mail]
 }
 
 func (c *mailController) Work(ctx context.Context, resource *delta.Resource[Mail]) error {
