@@ -101,6 +101,12 @@ func (c StripeCustomer) InformOpts() delta.InformOpts {
 	}
 }
 
+func (c StripeCustomer) Settings() delta.ObjectSettings {
+	return delta.ObjectSettings{
+		Parallelism: 10,
+	}
+}
+
 type customerController struct {
 	delta.WorkerDefaults[StripeCustomer]
 	delta.InformerDefaults[StripeCustomer]

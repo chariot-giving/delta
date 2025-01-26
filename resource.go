@@ -49,7 +49,7 @@ type ObjectWithSettings interface {
 
 type ObjectSettings struct {
 	// Parallelism is the number of concurrent workers that can be run for this
-	// kind of resource. If this is 0, the default parallelism is used.
+	// kind of resource. If this is 0, the default parallelism of 1 is used.
 	//
 	// Must be a zero or positive integer less than or equal to 10,000.
 	Parallelism int
