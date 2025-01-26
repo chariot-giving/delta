@@ -112,7 +112,14 @@ type Client struct {
 	subscriptionManager *subscriptionManager
 }
 
+var (
+	errMissingConfig = errors.New("missing config")
+)
+
 func NewClient(dbPool *pgxpool.Pool, config *Config) (*Client, error) {
+	if config == nil {
+		return nil, errMissingConfig
+	}
 	logger := config.Logger
 	if logger == nil {
 		logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
