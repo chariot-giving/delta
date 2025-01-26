@@ -38,9 +38,7 @@ func main() {
 				MaxWorkers: 3,
 			},
 		},
-		Controllers:            controllers,
-		ResourceInformInterval: 60 * time.Second, // re-run controller Informers every 60 seconds
-		MaintenanceJobInterval: 60 * time.Second, // run maintenance jobs every 60 seconds
+		Controllers: controllers,
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -103,7 +101,8 @@ func (c StripeCustomer) InformOpts() delta.InformOpts {
 
 func (c StripeCustomer) Settings() delta.ObjectSettings {
 	return delta.ObjectSettings{
-		Parallelism: 10,
+		Parallelism:    10,
+		InformInterval: 60 * time.Second,
 	}
 }
 
