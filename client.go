@@ -153,13 +153,13 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 		}
 
 		objectSettings := ObjectSettings{}
-		if objectWithSettings, ok := Object(controller.object).(ObjectWithSettings); ok {
+		if objectWithSettings, ok := controller.object.(ObjectWithSettings); ok {
 			objectSettings = objectWithSettings.Settings()
 		}
 
 		parallelism := firstNonZero(objectSettings.Parallelism, 1)
 		if parallelism < 1 {
-			return nil, fmt.Errorf("object parallelism setting must be a >= 0")
+			return nil, errors.New("object parallelism setting must be a >= 0")
 		}
 
 		// dynamically add controller resource queues

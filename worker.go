@@ -127,7 +127,7 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 			now := time.Now().UTC()
 			errorData, err := json.Marshal(deltatype.AttemptError{
 				At:      now,
-				Attempt: int(resourceRow.Attempt),
+				Attempt: resourceRow.Attempt,
 				Error:   err.Error(),
 			})
 			if err != nil {
@@ -179,7 +179,7 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 		now := time.Now().UTC()
 		errorData, err := json.Marshal(deltatype.AttemptError{
 			At:      now,
-			Attempt: int(resourceRow.Attempt),
+			Attempt: resourceRow.Attempt,
 			Error:   err.Error(),
 		})
 		if err != nil {
