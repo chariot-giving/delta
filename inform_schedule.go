@@ -49,7 +49,7 @@ func (w *controllerInformerScheduler) Work(ctx context.Context, job *river.Job[I
 		return err
 	}
 
-	logger.Info("found controllers", "size", len(controllers))
+	logger.InfoContext(ctx, "found controllers", "size", len(controllers))
 
 	for _, controller := range controllers {
 		opts := InformOptions{
@@ -70,13 +70,13 @@ func (w *controllerInformerScheduler) Work(ctx context.Context, job *river.Job[I
 		}
 
 		if res.UniqueSkippedAsDuplicate {
-			logger.Info("skipped controller inform job", "resource_kind", controller.Name)
+			logger.InfoContext(ctx, "skipped controller inform job", "resource_kind", controller.Name)
 		} else {
-			logger.Info("inserted controller inform job", "resource_kind", controller.Name)
+			logger.InfoContext(ctx, "inserted controller inform job", "resource_kind", controller.Name)
 		}
 	}
 
-	logger.Info("finished scheduling controller inform jobs", "size", len(controllers))
+	logger.InfoContext(ctx, "finished scheduling controller inform jobs", "size", len(controllers))
 
 	return nil
 }

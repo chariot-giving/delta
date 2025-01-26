@@ -34,12 +34,13 @@ func main() {
 		})),
 		Namespaces: map[string]delta.NamespaceConfig{
 			"events": {
-				ResourceExpiry: 10 * time.Minute, // expire resources after 10 minutes
+				ResourceExpiry: 10 * time.Second, // expire resources after 10 minutes
 			},
 		},
-		Controllers:            controllers,
-		ResourceInformInterval: 30 * time.Second, // re-run controller Informers every 30 seconds
-		MaintenanceJobInterval: 5 * time.Second,  // run maintenance jobs every 5 seconds
+		Controllers:                    controllers,
+		ResourceInformInterval:         30 * time.Second, // re-run controller Informers every 30 seconds
+		MaintenanceJobInterval:         5 * time.Second,  // run maintenance jobs every 5 seconds
+		DeletedResourceRetentionPeriod: 30 * time.Second, // keep deleted resources for 30 seconds
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -56,6 +57,27 @@ func main() {
 		Addr:    ":8080",
 		Handler: nil,
 	}
+
+	// Event subscription
+	events, cancel := deltaClient.Subscribe(delta.EventCategoryObjectSynced, delta.EventCategoryObjectDeleted)
+	defer cancel()
+	go func() {
+		for event := range events {
+			if event.EventCategory == delta.EventCategoryObjectSynced {
+				if event.Resource.Attempt == 1 {
+					// Note that in this example, it's possible for us to delete a resource, for the cleaner
+					// to hard-delete it from the DB and then for subsequent Informer controller to re-create
+					// the "mail" resource.
+					// This doesn't really model the real world but it demonstrates potential capabilities.
+					log.Printf("Resource created: %s:%s", event.Resource.ObjectKind, event.Resource.ObjectID)
+				} else {
+					log.Printf("Resource updated: %s:%s", event.Resource.ObjectKind, event.Resource.ObjectID)
+				}
+			} else if event.EventCategory == delta.EventCategoryObjectDeleted {
+				log.Printf("Resource deleted: %s:%s", event.Resource.ObjectKind, event.Resource.ObjectID)
+			}
+		}
+	}()
 
 	// Handle graceful shutdown
 	go func() {
@@ -165,6 +187,11 @@ type mailController struct {
 func (c *mailController) Work(ctx context.Context, resource *delta.Resource[Mail]) error {
 	log.Printf("Processing mail: %+v", resource.Object.ID())
 	<-time.After(time.Duration(rand.Intn(5)) * time.Second)
+
+	if resource.Attempt > 2 {
+		return delta.ResourceDelete(fmt.Errorf("failed after 3 attempts"))
+	}
+
 	log.Println("Finished processing mail")
 	return nil
 }

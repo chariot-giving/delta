@@ -247,7 +247,7 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 				MaxAttempts: 10, // TODO: make this configurable
 			})
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to create or update resource: %w", err)
 			}
 
 			resourceRow := toResourceRow(&res.DeltaResource)
@@ -262,7 +262,13 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 
 			return tx.Commit(ctx)
 		}
-		return err
+		return fmt.Errorf("failed to get resource: %w", err)
+	}
+
+	// handle soft-deleted resources
+	if resource.State == sqlc.DeltaResourceStateDeleted {
+		logger.WarnContext(ctx, "skipping soft-deleted resource", "id", resource.ID, "kind", resource.Kind, "object_id", resource.ObjectID)
+		return nil
 	}
 
 	// comparison
@@ -272,7 +278,7 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 	}
 	if compare == 0 && resource.State == sqlc.DeltaResourceStateSynced && !args.ProcessExisting {
 		// if the objects are the same, the resource is synced, and we don't want to process existing, skip
-		logger.Warn("skipping already processed object", "resource_id", resource.ID, "resource_kind", resource.Kind, "object_id", resource.ObjectID)
+		logger.WarnContext(ctx, "skipping already processed object", "id", resource.ID, "kind", resource.Kind, "object_id", resource.ObjectID)
 		return nil
 	}
 
@@ -280,12 +286,14 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 	// TODO: likely want to update object and hash state here
 	// but may not want to pre-emptively do it before the worker...?
 	updated, err := queries.ResourceSetState(ctx, &sqlc.ResourceSetStateParams{
-		ID:      resource.ID,
-		Column1: true,
-		State:   sqlc.DeltaResourceStateScheduled,
+		ID:       resource.ID,
+		Column1:  true,
+		State:    sqlc.DeltaResourceStateScheduled,
+		Column3:  true,
+		SyncedAt: nil,
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to set resource state: %w", err)
 	}
 
 	resourceRow := toResourceRow(updated)
@@ -295,10 +303,14 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 		Metadata: resourceRow.Metadata,
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to enqueue resource: %w", err)
 	}
 
-	return tx.Commit(ctx)
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
 }
 
 func (i *controllerInformer[T]) compareObjects(object T, resource deltatype.ResourceRow) (int, error) {

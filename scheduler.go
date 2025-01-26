@@ -48,7 +48,7 @@ func (w *controllerScheduler[T]) Work(ctx context.Context, job *river.Job[Schedu
 		return err
 	}
 
-	logger.Debug("scheduling resource", "resource_id", job.Args.ResourceID, "resource_kind", job.Args.object.Kind())
+	logger.DebugContext(ctx, "scheduling resource", "resource_id", job.Args.ResourceID, "resource_kind", job.Args.object.Kind())
 
 	tx, err := client.dbPool.Begin(ctx)
 	if err != nil {
@@ -71,7 +71,7 @@ func (w *controllerScheduler[T]) Work(ctx context.Context, job *river.Job[Schedu
 		// a river job was still scheduled for it.
 		// in this case we cancel the job since the resource will be replaced by a new resource record.
 		if errors.Is(err, pgx.ErrNoRows) {
-			logger.Debug("resource not found; canceling underlying job", "resource_id", job.Args.ResourceID)
+			logger.DebugContext(ctx, "resource not found; canceling underlying job", "resource_id", job.Args.ResourceID)
 			return river.JobCancel(fmt.Errorf("resource %d does not exist; it may have been deleted", job.Args.ResourceID))
 		}
 		return err
@@ -93,7 +93,7 @@ func (w *controllerScheduler[T]) Work(ctx context.Context, job *river.Job[Schedu
 		return err
 	}
 
-	logger.Info("scheduled resource", "resource_id", job.Args.ResourceID, "resource_kind", job.Args.object.Kind())
+	logger.InfoContext(ctx, "scheduled resource", "resource_id", job.Args.ResourceID, "resource_kind", job.Args.object.Kind())
 
 	return nil
 }

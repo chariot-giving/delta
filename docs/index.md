@@ -200,7 +200,7 @@ and how an application interacts with the Delta system.
 
 ## Getting Started
 
-To get started with Delta, you can follow the [Getting Started Guide](./docs/getting_started.md).
+To get started with Delta, you can follow the [Getting Started Guide](./getting_started.md).
 
 ## Acknowledgements
 

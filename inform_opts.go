@@ -33,12 +33,4 @@ type InformOpts struct {
 	// If tags are specified from both a resource override and from options on
 	// Inform, the latter takes precedence. Tags are not merged.
 	Tags []string
-
-	// Hash is a hash of the resource's Object. It is used to determine if the
-	// resource has changed since the last time it was worked.
-	// If certain fields should be ignored for comparison purposes, they should
-	// be omitted from the hash.
-	//
-	// Defaults to SHA256 of the resource's Object.
-	Hash []byte
 }

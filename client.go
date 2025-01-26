@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -103,10 +104,12 @@ type Config struct {
 // multiple instances operating on different databases or Postgres schemas
 // within a single database.
 type Client struct {
-	config  *Config
-	dbPool  *pgxpool.Pool
-	workers *river.Workers
-	client  *river.Client[pgx.Tx]
+	config              *Config
+	dbPool              *pgxpool.Pool
+	workers             *river.Workers
+	client              *river.Client[pgx.Tx]
+	eventCh             chan []Event
+	subscriptionManager *subscriptionManager
 }
 
 func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
@@ -127,10 +130,44 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 		workers: river.NewWorkers(),
 	}
 
-	// Add controller workers
+	queues := map[string]river.QueueConfig{
+		"controller": {
+			MaxWorkers: 3,
+		},
+		"maintenance": {
+			MaxWorkers: 1,
+		},
+	}
+
+	client.subscriptionManager = &subscriptionManager{
+		logger:           config.Logger.WithGroup("subscription_manager"),
+		subscriptions:    make(map[int]*eventSubscription),
+		subscriptionsSeq: 0,
+		mu:               sync.Mutex{},
+	}
+
+	// Add controller workers and underlying job queues
 	for _, controller := range config.Controllers.controllerMap {
 		if err := controller.configurer.Configure(client.workers); err != nil {
 			return nil, fmt.Errorf("error configuring %s controller: %w", controller.object.Kind(), err)
+		}
+
+		objectSettings := ObjectSettings{}
+		if objectWithSettings, ok := Object(controller.object).(ObjectWithSettings); ok {
+			objectSettings = objectWithSettings.Settings()
+		}
+
+		parallelism := firstNonZero(objectSettings.Parallelism, 1)
+		if parallelism < 1 {
+			return nil, fmt.Errorf("object parallelism setting must be a >= 0")
+		}
+
+		// dynamically add controller resource queues
+		// this ensures the delta clients that are configured with this controller
+		// will pick up the resource jobs from the underlying river queue
+		// see: https://github.com/riverqueue/river/discussions/725
+		queues[controller.object.Kind()] = river.QueueConfig{
+			MaxWorkers: parallelism,
 		}
 	}
 
@@ -149,25 +186,6 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 	// 2. cleaner (delete old resources that are degraded)
 	if err := river.AddWorkerSafely(client.workers, maintenance.NewCleaner(client.dbPool)); err != nil {
 		return nil, fmt.Errorf("error adding cleaner worker: %w", err)
-	}
-
-	queues := map[string]river.QueueConfig{
-		"controller": {
-			MaxWorkers: 3,
-		},
-		"maintenance": {
-			MaxWorkers: 1,
-		},
-	}
-
-	// dynamically add controller resource queues
-	// this ensures the delta clients that are configured with this controller
-	// will pick up the resource jobs from the underlying river queue
-	// see: https://github.com/riverqueue/river/discussions/725
-	for _, controller := range config.Controllers.controllerMap {
-		queues[controller.object.Kind()] = river.QueueConfig{
-			MaxWorkers: 3,
-		}
 	}
 
 	// initialize river client
@@ -242,6 +260,14 @@ func (c *Client) Start(ctx context.Context) error {
 		if err := validateNamespace(namespace); err != nil {
 			return err
 		}
+
+		if config.SyncedResourceRetentionPeriod > 0 && config.ResourceExpiry > 0 {
+			return fmt.Errorf("namespace %q: cannot set both SyncedResourceRetentionPeriod and ResourceExpiry", namespace)
+		}
+
+		// TODO: override synced, degraded, and deleted resource retention periods
+		// how do you ensure multiple clients don't override namespaces & associated cleaner settings?
+
 		_, err := queries.NamespaceCreateOrSetUpdatedAt(ctx, &sqlc.NamespaceCreateOrSetUpdatedAtParams{
 			Name:      namespace,
 			ExpiryTtl: int32(min(float64(config.ResourceExpiry.Milliseconds()/1000), float64(math.MaxInt32))),
@@ -264,6 +290,12 @@ func (c *Client) Start(ctx context.Context) error {
 			return err
 		}
 	}
+
+	// configure event subscription channel
+	eventCh := make(chan []Event, 10)
+	c.eventCh = eventCh
+	c.subscriptionManager.ResetEventChan(eventCh)
+	go c.subscriptionManager.Start(ctx)
 
 	if err := c.client.Start(ctx); err != nil {
 		return fmt.Errorf("error starting river client: %w", err)
@@ -432,4 +464,34 @@ func (c *Client) Invalidate(ctx context.Context, object Object) (*deltatype.Reso
 
 	resourceRow := toResourceRow(updated)
 	return &resourceRow, nil
+}
+
+// Subscribe subscribes to the provided categories of object events that occur
+// within the client, like ObjectCreated for when an object is created.
+//
+// Returns a channel over which to receive events along with a cancel function
+// that can be used to cancel and tear down resources associated with the
+// subscription. It's recommended but not necessary to invoke the cancel
+// function. Resources will be freed when the client stops in case it's not.
+//
+// The event channel is buffered and sends on it are non-blocking. Consumers
+// must process events in a timely manner or it's possible for events to be
+// dropped. Any slow operations performed in a response to a receipt (e.g.
+// persisting to a database) should be made asynchronous to avoid event loss.
+//
+// Callers must specify the categories of events they're interested in. This allows
+// for forward compatibility in case new categories of events are added in future
+// versions. If new event categories are added, callers will have to explicitly add
+// them to their requested list and ensure they can be handled correctly.
+func (c *Client) Subscribe(cateogories ...EventCategory) (<-chan Event, func()) {
+	return c.subscribeConfig(&SubscribeConfig{Categories: cateogories})
+}
+
+// Special internal variant that lets us inject an overridden size.
+func (c *Client) subscribeConfig(config *SubscribeConfig) (<-chan Event, func()) {
+	if c.subscriptionManager == nil {
+		panic("created a subscription on a client that will never work resources (Controllers not configured)")
+	}
+
+	return c.subscriptionManager.SubscribeConfig(config)
 }

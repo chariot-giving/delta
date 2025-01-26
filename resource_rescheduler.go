@@ -61,14 +61,14 @@ func (r *rescheduler) Work(ctx context.Context, job *river.Job[RescheduleResourc
 
 	resources, err := queries.ResourceResetExpired(ctx, errorData)
 	if err != nil {
-		logger.Error("error resetting expired resources", "error", err)
+		logger.ErrorContext(ctx, "error resetting expired resources", "error", err)
 		return err
 	}
 
 	if len(resources) > 0 {
 		insertParams := make([]river.InsertManyParams, len(resources))
 		for i, resource := range resources {
-			logger.Debug("re-scheduling resource", "resource_id", resource.ID, "resource_kind", resource.Kind)
+			logger.DebugContext(ctx, "re-scheduling resource", "resource_id", resource.ID, "resource_kind", resource.Kind)
 			insertParams[i] = river.InsertManyParams{
 				Args: ScheduleArgs[kindObject]{
 					ResourceID: resource.ID,
@@ -82,13 +82,13 @@ func (r *rescheduler) Work(ctx context.Context, job *river.Job[RescheduleResourc
 
 		_, err = riverClient.InsertManyTx(ctx, tx, insertParams)
 		if err != nil {
-			logger.Error("error inserting rescheduled resources", "error", err)
+			logger.ErrorContext(ctx, "error inserting rescheduled resources", "error", err)
 			return err
 		}
 
-		logger.Info("rescheduled expired resources", "count", len(resources))
+		logger.InfoContext(ctx, "rescheduled expired resources", "count", len(resources))
 	} else {
-		logger.Debug("no expired resources to reschedule")
+		logger.DebugContext(ctx, "no expired resources to reschedule")
 	}
 
 	if err := tx.Commit(ctx); err != nil {
