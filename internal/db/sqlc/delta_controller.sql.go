@@ -12,21 +12,28 @@ import (
 
 const controllerCreateOrSetUpdatedAt = `-- name: ControllerCreateOrSetUpdatedAt :one
 INSERT INTO delta_controller(
-    created_at,
-    metadata,
-    name,
-    updated_at,
-    inform_interval
-) VALUES (
-    now(),
-    coalesce($1::jsonb, '{}'::jsonb),
-    $2::text,
-    coalesce($3::timestamptz, now()),
-    coalesce($4::interval, '1 hour'::interval)
-) ON CONFLICT (name) DO UPDATE
-SET
-    updated_at = coalesce($3::timestamptz, now()),
-    inform_interval = coalesce($4::interval, '1 hour'::interval)
+        created_at,
+        metadata,
+        name,
+        updated_at,
+        inform_interval
+    )
+VALUES (
+        now(),
+        coalesce($1::jsonb, '{}'::jsonb),
+        $2::text,
+        coalesce($3::timestamptz, now()),
+        coalesce(
+            $4::interval,
+            '1 hour'::interval
+        )
+    ) ON CONFLICT (name) DO
+UPDATE
+SET updated_at = coalesce($3::timestamptz, now()),
+    inform_interval = coalesce(
+        $4::interval,
+        '1 hour'::interval
+    )
 RETURNING name, last_inform_time, inform_interval, created_at, updated_at, metadata
 `
 
@@ -57,7 +64,8 @@ func (q *Queries) ControllerCreateOrSetUpdatedAt(ctx context.Context, arg *Contr
 }
 
 const controllerGet = `-- name: ControllerGet :one
-SELECT name, last_inform_time, inform_interval, created_at, updated_at, metadata FROM delta_controller
+SELECT name, last_inform_time, inform_interval, created_at, updated_at, metadata
+FROM delta_controller
 WHERE name = $1
 `
 
@@ -76,9 +84,10 @@ func (q *Queries) ControllerGet(ctx context.Context, name string) (*DeltaControl
 }
 
 const controllerListReady = `-- name: ControllerListReady :many
-SELECT name, last_inform_time, inform_interval, created_at, updated_at, metadata FROM delta_controller
-WHERE
-    now() - last_inform_time > inform_interval
+SELECT name, last_inform_time, inform_interval, created_at, updated_at, metadata
+FROM delta_controller
+WHERE inform_interval > '0'
+    AND now() - last_inform_time > inform_interval
 ORDER BY last_inform_time ASC
 `
 
@@ -111,8 +120,7 @@ func (q *Queries) ControllerListReady(ctx context.Context) ([]*DeltaController, 
 
 const controllerSetLastInformTime = `-- name: ControllerSetLastInformTime :exec
 UPDATE delta_controller
-SET 
-    last_inform_time = now(),
+SET last_inform_time = now(),
     updated_at = now()
 WHERE name = $1
 `

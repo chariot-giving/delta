@@ -1,6 +1,8 @@
 package delta
 
 import (
+	"time"
+
 	"github.com/chariot-giving/delta/deltatype"
 	"github.com/chariot-giving/delta/internal/db/sqlc"
 )
@@ -53,6 +55,12 @@ type ObjectSettings struct {
 	//
 	// Must be a zero or positive integer less than or equal to 10,000.
 	Parallelism int
+
+	// InformInterval is the interval at which the informer should run for this
+	// kind of resource. If this is 0, the client's config inform interval is used.
+	//
+	// If < 0, the informer is disabled.
+	InformInterval time.Duration
 }
 
 // ComparableObject is an interface that combines Object with a method for comparison.

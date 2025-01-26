@@ -69,7 +69,9 @@ type Config struct {
 	MaintenanceJobInterval time.Duration
 
 	// ResourceInformerInterval is the interval at which the resource informer
-	// will run.
+	// will run. If this is 0, the default inform interval of 1 hour is used.
+	//
+	// If this is < 0, the resource informers will be disabled.
 	//
 	// Defaults to 1 hour.
 	ResourceInformInterval time.Duration
@@ -294,9 +296,14 @@ func (c *Client) Start(ctx context.Context) error {
 	}
 
 	// seed the initial controllers
-	// TODO: make the resource inform interval configurable per controller
-	informInterval := firstNonZero(c.config.ResourceInformInterval, time.Hour*1)
 	for _, controller := range c.config.Controllers.controllerMap {
+		objectSettings := ObjectSettings{}
+		if objectWithSettings, ok := controller.object.(ObjectWithSettings); ok {
+			objectSettings = objectWithSettings.Settings()
+		}
+
+		informInterval := firstNonZero(objectSettings.InformInterval, c.config.ResourceInformInterval, time.Hour*1)
+
 		_, err := queries.ControllerCreateOrSetUpdatedAt(ctx, &sqlc.ControllerCreateOrSetUpdatedAtParams{
 			Name:           controller.object.Kind(),
 			Metadata:       json.RawMessage(`{}`),
