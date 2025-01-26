@@ -28,7 +28,7 @@ func main() {
 	delta.AddController(controllers, &emailController{})
 	delta.AddController(controllers, &mailController{})
 
-	deltaClient, err := delta.NewClient(db, delta.Config{
+	deltaClient, err := delta.NewClient(db, &delta.Config{
 		Logger: slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 			Level: slog.LevelWarn,
 		})),
