@@ -7,6 +7,7 @@ require (
 	github.com/riverqueue/river v0.15.1-0.20250125195914-ee4cbd4edd5b
 	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.15.1-0.20250125195914-ee4cbd4edd5b
 	github.com/riverqueue/river/rivertype v0.15.1-0.20250125195914-ee4cbd4edd5b
+	github.com/stretchr/testify v1.10.0
 )
 
 require (
@@ -17,7 +18,6 @@ require (
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/riverqueue/river/riverdriver v0.15.1-0.20250125195914-ee4cbd4edd5b // indirect
 	github.com/riverqueue/river/rivershared v0.15.1-0.20250125195914-ee4cbd4edd5b // indirect
-	github.com/stretchr/testify v1.10.0 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
