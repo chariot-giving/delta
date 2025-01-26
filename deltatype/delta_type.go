@@ -85,6 +85,8 @@ type ResourceRow struct {
 	Errors []AttemptError
 }
 
+// Kind is used exclusively as a River JobArg
+// This SHOULD NOT be used to determine the Object Kind.
 func (r ResourceRow) Kind() string {
 	return "delta.resource." + r.ObjectKind
 }

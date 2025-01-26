@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -44,6 +45,22 @@ type Config struct {
 	// This field may be omitted for a program that's only informing resources rather
 	// than managing them. If it's specified, then Controllers must also be given.
 	Namespaces map[string]NamespaceConfig
+
+	// ResourceWorkTimeout is the maximum amount of time a controlle worker is allowed to run before its
+	// context is cancelled. A timeout of zero means ResourceWorkTimeout will be
+	// used, whereas a value of -1 means the controller's context will not be cancelled
+	// unless the Client is shutting down.
+	//
+	// Defaults to 1 minute.
+	ResourceWorkTimeout time.Duration
+
+	// ControllerInformTimeout is the maximum amount of time a controller informer is allowed to run before its
+	// context is cancelled. A timeout of zero means ControllerInformTimeout will be
+	// used, whereas a value of -1 means the controller's context will not be cancelled
+	// unless the Client is shutting down.
+	//
+	// Defaults to 1 minutes.
+	ControllerInformTimeout time.Duration
 
 	// MaintenanceJobInterval is the interval at which the maintenance jobs
 	// will run.
@@ -87,13 +104,22 @@ type Config struct {
 // multiple instances operating on different databases or Postgres schemas
 // within a single database.
 type Client struct {
-	config  *Config
-	dbPool  *pgxpool.Pool
-	workers *river.Workers
-	client  *river.Client[pgx.Tx]
+	config              *Config
+	dbPool              *pgxpool.Pool
+	workers             *river.Workers
+	client              *river.Client[pgx.Tx]
+	eventCh             chan []Event
+	subscriptionManager *subscriptionManager
 }
 
-func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
+var (
+	errMissingConfig = errors.New("missing config")
+)
+
+func NewClient(dbPool *pgxpool.Pool, config *Config) (*Client, error) {
+	if config == nil {
+		return nil, errMissingConfig
+	}
 	logger := config.Logger
 	if logger == nil {
 		logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -102,125 +128,147 @@ func NewClient(dbPool *pgxpool.Pool, config Config) (*Client, error) {
 	}
 	config.Logger = logger
 
+	config.ResourceWorkTimeout = firstNonZero(config.ResourceWorkTimeout, time.Minute*1)
+	config.ControllerInformTimeout = firstNonZero(config.ControllerInformTimeout, time.Minute*1)
+
 	client := &Client{
-		config:  &config,
+		config:  config,
 		dbPool:  dbPool,
 		workers: river.NewWorkers(),
 	}
 
-	// Add controller workers
-	for _, controller := range config.Controllers.controllerMap {
-		if err := controller.configurer.Configure(client.workers); err != nil {
-			return nil, fmt.Errorf("error configuring %s controller: %w", controller.object.Kind(), err)
+	if config.willManageResources() {
+		queues := map[string]river.QueueConfig{
+			"controller": {
+				MaxWorkers: 3,
+			},
+			"maintenance": {
+				MaxWorkers: 1,
+			},
 		}
-	}
 
-	// add generic controller delegators
-	insertOnlyRiverClient, err := river.NewClient(riverpgxv5.New(client.dbPool), &river.Config{})
-	if err != nil {
-		return nil, fmt.Errorf("error creating river client: %w", err)
-	}
-
-	if err := river.AddWorkerSafely(client.workers, &controllerInformerScheduler{pool: client.dbPool, riverClient: insertOnlyRiverClient}); err != nil {
-		return nil, fmt.Errorf("error adding controller informer scheduler worker: %w", err)
-	}
-	if err := river.AddWorkerSafely(client.workers, &rescheduler{pool: client.dbPool, riverClient: insertOnlyRiverClient}); err != nil {
-		return nil, fmt.Errorf("error adding rescheduler worker: %w", err)
-	}
-
-	// Add maintenance workers
-	// 1. expirer (expire resources)
-	if err := river.AddWorkerSafely(client.workers, maintenance.NewNamespaceExpirer(client.dbPool)); err != nil {
-		return nil, fmt.Errorf("error adding namespace expirer worker: %w", err)
-	}
-	// 2. cleaner (delete old resources that are degraded)
-	if err := river.AddWorkerSafely(client.workers, maintenance.NewCleaner(client.dbPool)); err != nil {
-		return nil, fmt.Errorf("error adding cleaner worker: %w", err)
-	}
-
-	queues := map[string]river.QueueConfig{
-		"controller": {
-			MaxWorkers: 3,
-		},
-		"maintenance": {
-			MaxWorkers: 1,
-		},
-	}
-
-	// dynamically add controller resource queues
-	// this ensures the delta clients that are configured with this controller
-	// will pick up the resource jobs from the underlying river queue
-	// see: https://github.com/riverqueue/river/discussions/725
-	for _, controller := range config.Controllers.controllerMap {
-		queues[controller.object.Kind()] = river.QueueConfig{
-			MaxWorkers: 3,
+		client.subscriptionManager = &subscriptionManager{
+			logger:           config.Logger.WithGroup("subscription_manager"),
+			subscriptions:    make(map[int]*eventSubscription),
+			subscriptionsSeq: 0,
+			mu:               sync.Mutex{},
 		}
-	}
 
-	// initialize river client
-	riverConfig := &river.Config{
-		Queues:  queues,
-		Workers: client.workers,
-		// Logger:  c.config.Logger.With("name", "riverqueue"),
-		WorkerMiddleware: []rivertype.WorkerMiddleware{
-			middleware.NewLoggingMiddleware(client.config.Logger),
-			&jobContextMiddleware{client: client},
-		},
-		PeriodicJobs: []*river.PeriodicJob{
-			river.NewPeriodicJob(
-				river.PeriodicInterval(firstNonZero(client.config.MaintenanceJobInterval, time.Minute*1)),
-				func() (river.JobArgs, *river.InsertOpts) {
-					return InformScheduleArgs{}, nil
-				},
-				&river.PeriodicJobOpts{
-					RunOnStart: true,
-				},
-			),
-			river.NewPeriodicJob(
-				river.PeriodicInterval(firstNonZero(client.config.MaintenanceJobInterval, time.Minute*1)),
-				func() (river.JobArgs, *river.InsertOpts) {
-					return RescheduleResourceArgs{}, nil
-				},
-				&river.PeriodicJobOpts{
-					RunOnStart: true,
-				},
-			),
-			river.NewPeriodicJob(
-				river.PeriodicInterval(firstNonZero(client.config.MaintenanceJobInterval, time.Minute*1)),
-				func() (river.JobArgs, *river.InsertOpts) {
-					return maintenance.ExpireResourceArgs{}, nil
-				},
-				&river.PeriodicJobOpts{
-					RunOnStart: true,
-				},
-			),
-			river.NewPeriodicJob(
-				river.PeriodicInterval(firstNonZero(client.config.MaintenanceJobInterval, time.Minute*1)),
-				func() (river.JobArgs, *river.InsertOpts) {
-					return maintenance.CleanResourceArgs{
-						DeletedResourceRetentionPeriod:  firstNonZero(client.config.DeletedResourceRetentionPeriod, time.Hour*24),
-						SyncedResourceRetentionPeriod:   firstNonZero(client.config.SyncedResourceRetentionPeriod, time.Hour*24),
-						DegradedResourceRetentionPeriod: firstNonZero(client.config.DegradedResourceRetentionPeriod, time.Hour*24),
-						Timeout:                         firstNonZero(client.config.ResourceCleanerTimeout, time.Second*30),
-					}, nil
-				},
-				&river.PeriodicJobOpts{
-					RunOnStart: true,
-				},
-			),
-		},
-	}
+		// Add controller workers and underlying job queues
+		for _, controller := range config.Controllers.controllerMap {
+			if err := controller.configurer.Configure(client.workers); err != nil {
+				return nil, fmt.Errorf("error configuring %s controller: %w", controller.object.Kind(), err)
+			}
 
-	riverClient, err := river.NewClient(riverpgxv5.New(client.dbPool), riverConfig)
-	if err != nil {
-		return nil, fmt.Errorf("error creating river client: %w", err)
+			objectSettings := ObjectSettings{}
+			if objectWithSettings, ok := controller.object.(ObjectWithSettings); ok {
+				objectSettings = objectWithSettings.Settings()
+			}
+
+			parallelism := firstNonZero(objectSettings.Parallelism, 1)
+			if parallelism < 1 {
+				return nil, errors.New("object parallelism setting must be a >= 0")
+			}
+
+			// dynamically add controller resource queues
+			// this ensures the delta clients that are configured with this controller
+			// will pick up the resource jobs from the underlying river queue
+			// see: https://github.com/riverqueue/river/discussions/725
+			queues[controller.object.Kind()] = river.QueueConfig{
+				MaxWorkers: parallelism,
+			}
+		}
+
+		if err := river.AddWorkerSafely(client.workers, &controllerInformerScheduler{pool: client.dbPool}); err != nil {
+			return nil, fmt.Errorf("error adding controller informer scheduler worker: %w", err)
+		}
+		if err := river.AddWorkerSafely(client.workers, &rescheduler{pool: client.dbPool}); err != nil {
+			return nil, fmt.Errorf("error adding rescheduler worker: %w", err)
+		}
+
+		// Add maintenance workers
+		// 1. expirer (expire resources)
+		if err := river.AddWorkerSafely(client.workers, maintenance.NewNamespaceExpirer(client.dbPool)); err != nil {
+			return nil, fmt.Errorf("error adding namespace expirer worker: %w", err)
+		}
+		// 2. cleaner (delete old resources that are degraded)
+		if err := river.AddWorkerSafely(client.workers, maintenance.NewCleaner(client.dbPool)); err != nil {
+			return nil, fmt.Errorf("error adding cleaner worker: %w", err)
+		}
+
+		// initialize river client
+		riverConfig := &river.Config{
+			Queues:              queues,
+			Workers:             client.workers,
+			SkipUnknownJobCheck: true,
+			// Logger:  c.config.Logger.With("name", "riverqueue"),
+			WorkerMiddleware: []rivertype.WorkerMiddleware{
+				middleware.NewLoggingMiddleware(client.config.Logger),
+				&jobContextMiddleware{client: client},
+			},
+			PeriodicJobs: []*river.PeriodicJob{
+				river.NewPeriodicJob(
+					river.PeriodicInterval(firstNonZero(client.config.MaintenanceJobInterval, time.Minute*1)),
+					func() (river.JobArgs, *river.InsertOpts) {
+						return InformScheduleArgs{}, nil
+					},
+					&river.PeriodicJobOpts{
+						RunOnStart: true,
+					},
+				),
+				river.NewPeriodicJob(
+					river.PeriodicInterval(firstNonZero(client.config.MaintenanceJobInterval, time.Minute*1)),
+					func() (river.JobArgs, *river.InsertOpts) {
+						return RescheduleResourceArgs{}, nil
+					},
+					&river.PeriodicJobOpts{
+						RunOnStart: true,
+					},
+				),
+				river.NewPeriodicJob(
+					river.PeriodicInterval(firstNonZero(client.config.MaintenanceJobInterval, time.Minute*1)),
+					func() (river.JobArgs, *river.InsertOpts) {
+						return maintenance.ExpireResourceArgs{}, nil
+					},
+					&river.PeriodicJobOpts{
+						RunOnStart: true,
+					},
+				),
+				river.NewPeriodicJob(
+					river.PeriodicInterval(firstNonZero(client.config.MaintenanceJobInterval, time.Minute*1)),
+					func() (river.JobArgs, *river.InsertOpts) {
+						return maintenance.CleanResourceArgs{
+							DeletedResourceRetentionPeriod:  firstNonZero(client.config.DeletedResourceRetentionPeriod, time.Hour*24),
+							SyncedResourceRetentionPeriod:   firstNonZero(client.config.SyncedResourceRetentionPeriod, time.Hour*24),
+							DegradedResourceRetentionPeriod: firstNonZero(client.config.DegradedResourceRetentionPeriod, time.Hour*24),
+							Timeout:                         firstNonZero(client.config.ResourceCleanerTimeout, time.Second*30),
+						}, nil
+					},
+					&river.PeriodicJobOpts{
+						RunOnStart: true,
+					},
+				),
+			},
+		}
+
+		riverClient, err := river.NewClient(riverpgxv5.New(client.dbPool), riverConfig)
+		if err != nil {
+			return nil, fmt.Errorf("error creating river client: %w", err)
+		}
+		client.client = riverClient
 	}
-	client.client = riverClient
 
 	return client, nil
 }
 
 func (c *Client) Start(ctx context.Context) error {
+	if !c.config.willManageResources() {
+		return errors.New("client Namespaces and Controllers must be configured for a client to start managing resources")
+	}
+	if c.config.Controllers != nil && len(c.config.Controllers.controllerMap) < 1 {
+		return errors.New("at least one Controller must be added to the Controllers bundle")
+	}
+
 	queries := sqlc.New(c.dbPool)
 
 	// seed the initial namespaces
@@ -228,6 +276,14 @@ func (c *Client) Start(ctx context.Context) error {
 		if err := validateNamespace(namespace); err != nil {
 			return err
 		}
+
+		if config.SyncedResourceRetentionPeriod > 0 && config.ResourceExpiry > 0 {
+			return fmt.Errorf("namespace %q: cannot set both SyncedResourceRetentionPeriod and ResourceExpiry", namespace)
+		}
+
+		// TODO: override synced, degraded, and deleted resource retention periods
+		// how do you ensure multiple clients don't override namespaces & associated cleaner settings?
+
 		_, err := queries.NamespaceCreateOrSetUpdatedAt(ctx, &sqlc.NamespaceCreateOrSetUpdatedAtParams{
 			Name:      namespace,
 			ExpiryTtl: int32(min(float64(config.ResourceExpiry.Milliseconds()/1000), float64(math.MaxInt32))),
@@ -250,6 +306,12 @@ func (c *Client) Start(ctx context.Context) error {
 			return err
 		}
 	}
+
+	// configure event subscription channel
+	eventCh := make(chan []Event, 10)
+	c.eventCh = eventCh
+	c.subscriptionManager.ResetEventChan(eventCh)
+	go c.subscriptionManager.Start(ctx)
 
 	if err := c.client.Start(ctx); err != nil {
 		return fmt.Errorf("error starting river client: %w", err)
@@ -418,4 +480,41 @@ func (c *Client) Invalidate(ctx context.Context, object Object) (*deltatype.Reso
 
 	resourceRow := toResourceRow(updated)
 	return &resourceRow, nil
+}
+
+// Subscribe subscribes to the provided categories of object events that occur
+// within the client, like ObjectCreated for when an object is created.
+//
+// Returns a channel over which to receive events along with a cancel function
+// that can be used to cancel and tear down resources associated with the
+// subscription. It's recommended but not necessary to invoke the cancel
+// function. Resources will be freed when the client stops in case it's not.
+//
+// The event channel is buffered and sends on it are non-blocking. Consumers
+// must process events in a timely manner or it's possible for events to be
+// dropped. Any slow operations performed in a response to a receipt (e.g.
+// persisting to a database) should be made asynchronous to avoid event loss.
+//
+// Callers must specify the categories of events they're interested in. This allows
+// for forward compatibility in case new categories of events are added in future
+// versions. If new event categories are added, callers will have to explicitly add
+// them to their requested list and ensure they can be handled correctly.
+func (c *Client) Subscribe(cateogories ...EventCategory) (<-chan Event, func()) {
+	return c.subscribeConfig(&SubscribeConfig{Categories: cateogories})
+}
+
+// Special internal variant that lets us inject an overridden size.
+func (c *Client) subscribeConfig(config *SubscribeConfig) (<-chan Event, func()) {
+	if c.subscriptionManager == nil {
+		panic("created a subscription on a client that will never work resources (Controllers not configured)")
+	}
+
+	return c.subscriptionManager.SubscribeConfig(config)
+}
+
+// Indicates whether with the given configuration, this client will be expected
+// to manage resources (rather than just being used to inform them). Managing resources
+// requires a set of configured namespaces.
+func (c *Config) willManageResources() bool {
+	return len(c.Namespaces) > 0
 }

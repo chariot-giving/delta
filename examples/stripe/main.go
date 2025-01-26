@@ -29,7 +29,7 @@ func main() {
 	controllers := delta.NewControllers()
 	delta.AddController(controllers, &customerController{})
 
-	deltaClient, err := delta.NewClient(db, delta.Config{
+	deltaClient, err := delta.NewClient(db, &delta.Config{
 		Logger: slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 			Level: slog.LevelInfo,
 		})),
@@ -102,6 +102,8 @@ func (c StripeCustomer) InformOpts() delta.InformOpts {
 }
 
 type customerController struct {
+	delta.WorkerDefaults[StripeCustomer]
+	delta.InformerDefaults[StripeCustomer]
 }
 
 func (c *customerController) Work(ctx context.Context, resource *delta.Resource[StripeCustomer]) error {

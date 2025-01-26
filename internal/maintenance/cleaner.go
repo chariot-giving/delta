@@ -50,7 +50,8 @@ type cleaner struct {
 
 func NewCleaner(pool *pgxpool.Pool) *cleaner {
 	return &cleaner{
-		pool: pool,
+		pool:      pool,
+		batchSize: 1000,
 	}
 }
 
@@ -66,10 +67,10 @@ func (c *cleaner) Work(ctx context.Context, job *river.Job[CleanResourceArgs]) e
 		Name: "default",
 	})
 
-	logger.Info("cleaning resources", "num_namespaces", len(namespaces))
+	logger.DebugContext(ctx, "cleaning resources", "num_namespaces", len(namespaces))
 
 	for _, namespace := range namespaces {
-		logger.Debug("cleaning resources", "namespace", namespace.Name)
+		logger.DebugContext(ctx, "cleaning resources", "namespace", namespace.Name)
 
 		// Wrapped in a function so that defers run as expected.
 		numDeleted, err := func() (int, error) {
@@ -92,10 +93,10 @@ func (c *cleaner) Work(ctx context.Context, job *river.Job[CleanResourceArgs]) e
 			return err
 		}
 
-		logger.Debug("deleted resources", "namespace", namespace.Name, "num_deleted", numDeleted)
+		logger.DebugContext(ctx, "deleted resources", "namespace", namespace.Name, "num_deleted", numDeleted)
 	}
 
-	logger.Info("finished cleaning resources")
+	logger.DebugContext(ctx, "finished cleaning resources")
 
 	return nil
 }

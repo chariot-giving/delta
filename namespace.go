@@ -22,16 +22,32 @@ type NamespaceConfig struct {
 	//
 	// Requires a minimum of 1, and a maximum of 10,000.
 	MaxWorkers int
-	// ExpiryDuration is the duration (seconds) after which a resource is considered expired.
+
+	// ResourceExpiry is the duration (seconds) after which a previously
+	// synced resource is considered expired.
 	//
 	// If this is set to 0, resources within the namespace will never expire.
+	// Defaults to 0 (resources never expire).
 	ResourceExpiry time.Duration
 
-	// ResourceRetentionPeriod is the amount of time to keep resources around before
-	// they're removed permanently.
+	// DeletedResourceRetentionPeriod is the amount of time to keep deleted resources
+	// around before they're removed permanently.
 	//
 	// Defaults to 24 hours.
-	ResourceRetentionPeriod time.Duration
+	DeletedResourceRetentionPeriod time.Duration
+
+	// SyncedResourceRetentionPeriod is the amount of time to keep synced resources
+	// around before they're removed permanently.
+	// This value is only respected if ResourceExpiry is set to a zero value.
+	//
+	// Defaults to 24 hours.
+	SyncedResourceRetentionPeriod time.Duration
+
+	// DegradedResourceRetentionPeriod is the amount of time to keep degraded resources
+	// around before they're removed permanently.
+	//
+	// Defaults to 24 hours.
+	DegradedResourceRetentionPeriod time.Duration
 }
 
 var nameRegex = regexp.MustCompile(`^(?:[a-z0-9])+(?:[_|\-]?[a-z0-9]+)*$`)

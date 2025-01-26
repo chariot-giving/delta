@@ -14,6 +14,7 @@ type Resource[T Object] struct {
 	Object T
 }
 
+// Kind is specific to the River package and NOT meant to be used as the Resource/Object Kind.
 func (r Resource[T]) Kind() string {
 	return "delta.resource." + r.Object.Kind()
 }
@@ -37,6 +38,21 @@ type ObjectWithInformOpts interface {
 	// InformOpts returns options for all resources of this job type, overriding any
 	// system defaults. These can also be overridden at inform time.
 	InformOpts() InformOpts
+}
+
+// ObjectWithSettings is an extra interface that a resource may implement on top
+// of Object to provide settings for all resources of this type.
+type ObjectWithSettings interface {
+	// Behavior returns the settings for this object.
+	Settings() ObjectSettings
+}
+
+type ObjectSettings struct {
+	// Parallelism is the number of concurrent workers that can be run for this
+	// kind of resource. If this is 0, the default parallelism is used.
+	//
+	// Must be a zero or positive integer less than or equal to 10,000.
+	Parallelism int
 }
 
 // ComparableObject is an interface that combines Object with a method for comparison.

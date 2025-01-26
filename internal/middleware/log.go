@@ -23,12 +23,12 @@ func (m *loggingMiddleware) Work(ctx context.Context, job *rivertype.JobRow, doI
 	newCtx := context.WithValue(ctx, contextKeyLogger{}, logger)
 
 	now := time.Now()
-	logger.Info("starting job", "started_at", now.Format(time.RFC3339))
+	logger.InfoContext(ctx, "starting job", "started_at", now.Format(time.RFC3339))
 	err := doInner(newCtx)
 	if err != nil {
-		logger.Error("job failed", "error", err, "finished_at", time.Now().Format(time.RFC3339), "duration", time.Since(now).Milliseconds())
+		logger.ErrorContext(ctx, "job failed", "error", err, "finished_at", time.Now().Format(time.RFC3339), "duration", time.Since(now).Milliseconds())
 	} else {
-		logger.Info("job completed", "finished_at", time.Now().Format(time.RFC3339), "duration", time.Since(now).Milliseconds())
+		logger.InfoContext(ctx, "job completed", "finished_at", time.Now().Format(time.RFC3339), "duration", time.Since(now).Milliseconds())
 	}
 	return err
 }

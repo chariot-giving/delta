@@ -41,33 +41,29 @@ func (e *namespaceExpirer) Work(ctx context.Context, job *river.Job[ExpireResour
 		return err
 	}
 
-	logger.Debug("expiring resources for all namespaces", "num_namespaces", len(namespaces))
+	logger.DebugContext(ctx, "expiring resources for all namespaces", "num_namespaces", len(namespaces))
 
-	expireParams := make([]*sqlc.ResourceExpireParams, 0, len(namespaces))
 	for _, namespace := range namespaces {
 		// don't expire resources in a namespace that has no expiry ttl
 		if namespace.ExpiryTtl == 0 {
 			continue
 		}
 
-		logger.Debug("expiring resources for namespace", "namespace", namespace.Name)
-		expireParams = append(expireParams, &sqlc.ResourceExpireParams{
+		logger.DebugContext(ctx, "expiring resources for namespace", "namespace", namespace.Name)
+
+		numExpired, err := queries.ResourceExpire(ctx, &sqlc.ResourceExpireParams{
 			Namespace: namespace.Name,
 			ExpiryTtl: namespace.ExpiryTtl,
 		})
+		if err != nil {
+			logger.ErrorContext(ctx, "failed to expire resources for namespace", "namespace", namespace.Name, "error", err)
+			return err
+		}
+
+		logger.InfoContext(ctx, "expired resources for namespace", "namespace", namespace.Name, "num_expired", numExpired)
 	}
 
-	batch := queries.ResourceExpire(ctx, expireParams)
-
-	batch.Exec(func(i int, err error) {
-		if err != nil {
-			logger.Error("failed to expire resources for namespace", "namespace", expireParams[i].Namespace, "error", err)
-			return
-		}
-		logger.Debug("expired resources for namespace", "namespace", expireParams[i].Namespace)
-	})
-
-	logger.Info("finished expiring resources for all namespaces", "num_namespaces", len(namespaces))
+	logger.DebugContext(ctx, "finished expiring resources for all namespaces", "num_namespaces", len(namespaces))
 
 	return nil
 }
