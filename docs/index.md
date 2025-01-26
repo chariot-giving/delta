@@ -202,6 +202,29 @@ and how an application interacts with the Delta system.
 
 To get started with Delta, you can follow the [Getting Started Guide](./getting_started.md).
 
+## Contributing
+
+### Contributor License Agreement
+
+Chariot Giving - Delta CLAs (content license agreements):
+
+* [Entity CLA](./cla/entity-cla.md)
+* [Individual CLA](./cla/individual-cla.md)
+
+**To sign it:**
+
+1. Read either the [entity CLA](./entity-cla.md) (if you're a business entity) or [individual CLA](./individual-cla.md) (if you're not).
+2. Acknowledge your agreement by opening a pull request to the signees CSV by [clicking here](https://github.com/chariot-giving/delta/edit/main/docs/cla/signees.csv) and adding your name and GitHub username as a new line.
+3. We'll merge the pull request and you're done.
+
+CLAs were generated using [contributoragreements.org](https://contributoragreements.org/).
+
+### Code of Conduct
+
+This project and everyone participating in it is governed by the [Code of Conduct](../CODE_OF_CONDUCT.md).
+
+Code of Conduct was generated using [contributor-covenant.org](https://www.contributor-covenant.org/).
+
 ## Acknowledgements
 
 This project uses the following dependencies:

@@ -1,5 +1,7 @@
 # delta
 
+[![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](code_of_conduct.md)
+
 Delta is a robust high-performance resource synchronization system for Go and Postgres.
 
 ## Overview
@@ -201,6 +203,10 @@ and how an application interacts with the Delta system.
 ## Getting Started
 
 To get started with Delta, you can follow the [Getting Started Guide](./docs/getting_started.md).
+
+## Contributing
+
+Please read the [Contributing Guide](./CONTRIBUTING.md) for details on our code of conduct, and the process for submitting pull requests to us.
 
 ## Acknowledgements
 
