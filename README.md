@@ -196,7 +196,7 @@ The Delta architecture is designed to be modular and extensible.
 Below you will a high-level diagram of the Delta architecture
 and how an application interacts with the Delta system.
 
-![Architecture](./images/architecture.png)
+![Architecture](./docs/images/architecture.png)
 
 ## Getting Started
 
