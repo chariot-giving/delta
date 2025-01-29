@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Updated `river` version to `v0.16.0`.
 - Configured River client with `SkipUnknownJobCheck` client config option to skip job arg worker validation and remove need to instantiate a duplicate, insert-only River client.
 
 ## [ v0.1.0-alpha] - 2025-01-22
