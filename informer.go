@@ -25,11 +25,18 @@ import (
 type InformOptions struct {
 	// Labels is a map of key-value pairs that can be used to filter resources
 	Labels map[string]string
-	// Since allows filtering resources modified after a specific time
-	// TODO: ideally, there is some state kept in delta DB that tracks controller inform jobs
-	// and saves down the last successful inform time so subsequent informs can be filtered
-	// to only inform resources that have changed since the last successful inform time.
-	Since *time.Time
+	// After allows filtering resources based on a specific time.
+	// If specified, informers should inform resources that have been created or updated
+	// after the specified time.
+	//
+	// Note that while the logic for which datetime field that this is used against is dependent
+	// on the external system's API and the expected behavior of the resource/informer.
+	// This should always be treated as exclusive date/time meaning the resources created or updated
+	// at the exact time specified should not be included in the inform results.
+	//
+	// Note that this is mostly useful as a performance optimization to help keep periodic informer
+	// jobs from re-informing entire datasets.
+	After *time.Time
 	// Limit sets the maximum number of resources to return (0 means no limit)
 	Limit int
 	// OrderBy specifies the field and direction for sorting (e.g., "created_at DESC")
@@ -118,13 +125,14 @@ func (i *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformA
 		return fmt.Errorf("failed to get controller inform record: %w", err)
 	}
 
+	after := firstNonZero(job.Args.Options.After, &controller.LastInformTime)
 	metadata := make(map[string]string)
 	if len(job.Args.Options.Labels) > 0 {
 		metadata = job.Args.Options.Labels
 	}
 	informOpts := InformOptions{
 		Labels:  metadata,
-		Since:   firstNonZero(job.Args.Options.Since, &controller.LastInformTime), // or we could take whichever is earlier?
+		After:   after,
 		OrderBy: firstNonZero(job.Args.Options.OrderBy),
 		Limit:   firstNonZero(job.Args.Options.Limit),
 	}
@@ -147,20 +155,41 @@ func (i *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformA
 			return fmt.Errorf("failed to inform controller: %w", err)
 		}
 
+		numObjects := 0
+		var lastObjectCreatedAt time.Time
 		for {
 			select {
 			case obj, ok := <-queue:
 				if !ok {
 					// happy path: successfully informed all resources
-					if !job.Args.ProcessExisting {
-						// only update the controller last inform time if we aren't processing existing resources
-						err := queries.ControllerSetLastInformTime(ctx, controller.Name)
+					if !job.Args.ProcessExisting && numObjects > 0 {
+						// only update the controller last inform time if we aren't processing existing resources.
+						// and we have informed at least one resource.
+						//
+						// default to use the current time but use the last object created time if it's before the current time
+						// to ensure complete coverage of resources in the case of potential race conditions
+						// e.g. situations where a resource is created after our informer finishes but before this
+						// point is reached.
+						lastInformTime := time.Now()
+						if !lastObjectCreatedAt.IsZero() && lastObjectCreatedAt.Before(lastInformTime) {
+							lastInformTime = lastObjectCreatedAt
+						}
+						err := queries.ControllerSetLastInformTime(ctx, &sqlc.ControllerSetLastInformTimeParams{
+							LastInformTime: lastInformTime,
+							Name:           controller.Name,
+						})
 						if err != nil {
 							return err
 						}
 					}
 					return nil
 				}
+				if objWithCreatedAt, ok := Object(obj).(ObjectWithCreatedAt); ok {
+					if objWithCreatedAt.CreatedAt().After(lastObjectCreatedAt) {
+						lastObjectCreatedAt = objWithCreatedAt.CreatedAt()
+					}
+				}
+				numObjects++
 				if err := i.processObject(ctx, obj, &job.Args); err != nil {
 					return err
 				}
@@ -235,16 +264,27 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 			}
 			hash := sha256.Sum256(objBytes)
 
+			var externalCreatedAt *time.Time
+			if objectWithCreatedAt, ok := Object(object).(ObjectWithCreatedAt); ok {
+				createdAt := objectWithCreatedAt.CreatedAt()
+				if !createdAt.IsZero() {
+					externalCreatedAt = &createdAt
+				}
+			}
+
+			maxAttempts := firstNonZero(objectInformOpts.MaxAttempts, int16(10))
+
 			res, err := queries.ResourceCreateOrUpdate(ctx, &sqlc.ResourceCreateOrUpdateParams{
-				ObjectID:    object.ID(),
-				Kind:        object.Kind(),
-				Namespace:   namespace,
-				State:       sqlc.DeltaResourceStateScheduled,
-				Object:      objBytes,
-				Metadata:    objectInformOpts.Metadata,
-				Tags:        tags,
-				Hash:        hash[:],
-				MaxAttempts: 10, // TODO: make this configurable
+				ObjectID:          object.ID(),
+				Kind:              object.Kind(),
+				Namespace:         namespace,
+				State:             sqlc.DeltaResourceStateScheduled,
+				Object:            objBytes,
+				Metadata:          objectInformOpts.Metadata,
+				Tags:              tags,
+				Hash:              hash[:],
+				MaxAttempts:       maxAttempts,
+				ExternalCreatedAt: externalCreatedAt,
 			})
 			if err != nil {
 				return fmt.Errorf("failed to create or update resource: %w", err)
@@ -282,15 +322,17 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 		return nil
 	}
 
+	objBytes, err := json.Marshal(object)
+	if err != nil {
+		return fmt.Errorf("failed to marshal object: %w", err)
+	}
+	hash := sha256.Sum256(objBytes)
+
 	// update the resource to be scheduled
-	// TODO: likely want to update object and hash state here
-	// but may not want to pre-emptively do it before the worker...?
-	updated, err := queries.ResourceSetState(ctx, &sqlc.ResourceSetStateParams{
-		ID:       resource.ID,
-		Column1:  true,
-		State:    sqlc.DeltaResourceStateScheduled,
-		Column3:  true,
-		SyncedAt: nil,
+	updated, err := queries.ResourceSchedule(ctx, &sqlc.ResourceScheduleParams{
+		ID:     resource.ID,
+		Object: objBytes,
+		Hash:   hash[:],
 	})
 	if err != nil {
 		return fmt.Errorf("failed to set resource state: %w", err)

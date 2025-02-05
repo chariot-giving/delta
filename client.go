@@ -389,15 +389,27 @@ func (c *Client) InformTx(ctx context.Context, tx pgx.Tx, object Object, opts *I
 	}
 	hash := sha256.Sum256(objBytes)
 
+	var externalCreatedAt *time.Time
+	if objectWithCreatedAt, ok := object.(ObjectWithCreatedAt); ok {
+		createdAt := objectWithCreatedAt.CreatedAt()
+		if !createdAt.IsZero() {
+			externalCreatedAt = &createdAt
+		}
+	}
+
+	maxAttempts := firstNonZero(opts.MaxAttempts, objectInformOpts.MaxAttempts, int16(10))
+
 	res, err := queries.ResourceCreateOrUpdate(ctx, &sqlc.ResourceCreateOrUpdateParams{
-		ObjectID:  object.ID(),
-		Kind:      object.Kind(),
-		Namespace: namespace,
-		State:     sqlc.DeltaResourceStateScheduled,
-		Object:    objBytes,
-		Metadata:  objectInformOpts.Metadata,
-		Tags:      tags,
-		Hash:      hash[:],
+		ObjectID:          object.ID(),
+		Kind:              object.Kind(),
+		Namespace:         namespace,
+		State:             sqlc.DeltaResourceStateScheduled,
+		Object:            objBytes,
+		Metadata:          objectInformOpts.Metadata,
+		Tags:              tags,
+		Hash:              hash[:],
+		ExternalCreatedAt: externalCreatedAt,
+		MaxAttempts:       maxAttempts,
 	})
 	if err != nil {
 		return nil, err

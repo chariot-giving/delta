@@ -29,9 +29,27 @@ func (r Resource[T]) Kind() string {
 type Object interface {
 	// ID is a string that uniquely identifies the object.
 	ID() string
+
 	// Kind is a string that uniquely identifies the type of resource. This must be
 	// provided on your resource object struct.
 	Kind() string
+}
+
+// ObjectWithCreatedAt is an extra interface that a resource may implement on top
+// of Object to provide a created at time as reported by an external system.
+// It is strongly recommended to implement this interface for all resources.
+//
+// This is important to prevent race conditions where a resource is created after
+// the informer has finished but before the controller has updated its last inform time.
+//
+// If this is not implemented, the current time will be used to track controller inform periods
+// which is subject to Delta potentially excluding resources from being informed.
+type ObjectWithCreatedAt interface {
+	// CreatedAt returns the time the object was created.
+	// This is used to determine the ordering of resources
+	// and ensure periodic informers have 100% coverage of resources from
+	// the controller's previous inform interval.
+	CreatedAt() time.Time
 }
 
 // ObjectWithInformArgs is an extra interface that a resource may implement on top

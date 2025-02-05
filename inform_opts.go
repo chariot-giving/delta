@@ -18,10 +18,17 @@ type InformOpts struct {
 	//
 	// Defaults to NamespaceDefault.
 	Namespace string
+
 	// Metadata is a JSON object blob of arbitrary data that will be stored with
 	// the resource. Users should not overwrite or remove anything stored in this
 	// field by Delta.
 	Metadata []byte
+
+	// MaxAttempts is the maximum number of times a resource will be attempted to be
+	// synced.
+	//
+	// Defaults to 10.
+	MaxAttempts int16
 
 	// Tags are an arbitrary list of keywords to add to the resource. They have no
 	// functional behavior and are meant entirely as a user-specified construct

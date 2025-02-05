@@ -36,6 +36,7 @@ CREATE TABLE delta_resource(
     attempted_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT NOW(),
     synced_at timestamptz,
+    external_created_at timestamptz,
 
     -- types stored out-of-band
     object_id text NOT NULL,
@@ -60,6 +61,7 @@ CREATE TABLE delta_resource(
 CREATE UNIQUE INDEX delta_resource_object_id_kind_unique ON delta_resource(object_id, kind);
 CREATE INDEX delta_resource_kind ON delta_resource USING btree(kind);
 CREATE INDEX delta_resource_object_id ON delta_resource USING btree(object_id);
+CREATE INDEX delta_resource_external_created_at ON delta_resource USING btree(external_created_at);
 
 -- use Generalized Inverted Index
 CREATE INDEX delta_resource_object_index ON delta_resource USING GIN(object);

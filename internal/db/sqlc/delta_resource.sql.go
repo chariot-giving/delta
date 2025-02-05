@@ -27,6 +27,7 @@ const resourceCreateOrUpdate = `-- name: ResourceCreateOrUpdate :one
 INSERT INTO delta_resource (
         object_id,
         kind,
+        external_created_at,
         namespace,
         state,
         created_at,
@@ -36,28 +37,30 @@ INSERT INTO delta_resource (
         hash,
         max_attempts
     )
-VALUES ($1, $2, $3, $4, NOW(), $5, $6, $7, $8, $9) ON CONFLICT (object_id, kind) DO
+VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10) ON CONFLICT (object_id, kind) DO
 UPDATE
-SET state = $4,
-    object = $5,
-    metadata = $6,
-    tags = $7,
-    hash = $8,
-    max_attempts = $9
-RETURNING delta_resource.id, delta_resource.state, delta_resource.attempt, delta_resource.max_attempts, delta_resource.attempted_at, delta_resource.created_at, delta_resource.synced_at, delta_resource.object_id, delta_resource.kind, delta_resource.namespace, delta_resource.object, delta_resource.hash, delta_resource.metadata, delta_resource.tags, delta_resource.errors,
+SET external_created_at = $3,
+    state = $5,
+    object = $6,
+    metadata = $7,
+    tags = $8,
+    hash = $9,
+    max_attempts = $10
+RETURNING delta_resource.id, delta_resource.state, delta_resource.attempt, delta_resource.max_attempts, delta_resource.attempted_at, delta_resource.created_at, delta_resource.synced_at, delta_resource.external_created_at, delta_resource.object_id, delta_resource.kind, delta_resource.namespace, delta_resource.object, delta_resource.hash, delta_resource.metadata, delta_resource.tags, delta_resource.errors,
     (xmax = 0) as is_insert
 `
 
 type ResourceCreateOrUpdateParams struct {
-	ObjectID    string
-	Kind        string
-	Namespace   string
-	State       DeltaResourceState
-	Object      []byte
-	Metadata    []byte
-	Tags        []string
-	Hash        []byte
-	MaxAttempts int16
+	ObjectID          string
+	Kind              string
+	ExternalCreatedAt *time.Time
+	Namespace         string
+	State             DeltaResourceState
+	Object            []byte
+	Metadata          []byte
+	Tags              []string
+	Hash              []byte
+	MaxAttempts       int16
 }
 
 type ResourceCreateOrUpdateRow struct {
@@ -69,6 +72,7 @@ func (q *Queries) ResourceCreateOrUpdate(ctx context.Context, arg *ResourceCreat
 	row := q.db.QueryRow(ctx, resourceCreateOrUpdate,
 		arg.ObjectID,
 		arg.Kind,
+		arg.ExternalCreatedAt,
 		arg.Namespace,
 		arg.State,
 		arg.Object,
@@ -86,6 +90,7 @@ func (q *Queries) ResourceCreateOrUpdate(ctx context.Context, arg *ResourceCreat
 		&i.DeltaResource.AttemptedAt,
 		&i.DeltaResource.CreatedAt,
 		&i.DeltaResource.SyncedAt,
+		&i.DeltaResource.ExternalCreatedAt,
 		&i.DeltaResource.ObjectID,
 		&i.DeltaResource.Kind,
 		&i.DeltaResource.Namespace,
@@ -121,7 +126,7 @@ WITH deleted_resources AS (
             ORDER BY id
             LIMIT $5::bigint
         )
-    RETURNING id, state, attempt, max_attempts, attempted_at, created_at, synced_at, object_id, kind, namespace, object, hash, metadata, tags, errors
+    RETURNING id, state, attempt, max_attempts, attempted_at, created_at, synced_at, external_created_at, object_id, kind, namespace, object, hash, metadata, tags, errors
 )
 SELECT count(*)
 FROM deleted_resources
@@ -174,7 +179,7 @@ func (q *Queries) ResourceExpire(ctx context.Context, arg *ResourceExpireParams)
 }
 
 const resourceGetByID = `-- name: ResourceGetByID :one
-SELECT id, state, attempt, max_attempts, attempted_at, created_at, synced_at, object_id, kind, namespace, object, hash, metadata, tags, errors
+SELECT id, state, attempt, max_attempts, attempted_at, created_at, synced_at, external_created_at, object_id, kind, namespace, object, hash, metadata, tags, errors
 FROM delta_resource
 WHERE id = $1
 LIMIT 1
@@ -191,6 +196,7 @@ func (q *Queries) ResourceGetByID(ctx context.Context, id int64) (*DeltaResource
 		&i.AttemptedAt,
 		&i.CreatedAt,
 		&i.SyncedAt,
+		&i.ExternalCreatedAt,
 		&i.ObjectID,
 		&i.Kind,
 		&i.Namespace,
@@ -204,7 +210,7 @@ func (q *Queries) ResourceGetByID(ctx context.Context, id int64) (*DeltaResource
 }
 
 const resourceGetByObjectIDAndKind = `-- name: ResourceGetByObjectIDAndKind :one
-SELECT id, state, attempt, max_attempts, attempted_at, created_at, synced_at, object_id, kind, namespace, object, hash, metadata, tags, errors
+SELECT id, state, attempt, max_attempts, attempted_at, created_at, synced_at, external_created_at, object_id, kind, namespace, object, hash, metadata, tags, errors
 FROM delta_resource
 WHERE object_id = $1
     AND kind = $2
@@ -227,6 +233,7 @@ func (q *Queries) ResourceGetByObjectIDAndKind(ctx context.Context, arg *Resourc
 		&i.AttemptedAt,
 		&i.CreatedAt,
 		&i.SyncedAt,
+		&i.ExternalCreatedAt,
 		&i.ObjectID,
 		&i.Kind,
 		&i.Namespace,
@@ -249,7 +256,7 @@ WHERE id IN (
         FROM delta_resource
         WHERE state = 'expired'
     )
-RETURNING id, state, attempt, max_attempts, attempted_at, created_at, synced_at, object_id, kind, namespace, object, hash, metadata, tags, errors
+RETURNING id, state, attempt, max_attempts, attempted_at, created_at, synced_at, external_created_at, object_id, kind, namespace, object, hash, metadata, tags, errors
 `
 
 func (q *Queries) ResourceResetExpired(ctx context.Context, error []byte) ([]*DeltaResource, error) {
@@ -269,6 +276,7 @@ func (q *Queries) ResourceResetExpired(ctx context.Context, error []byte) ([]*De
 			&i.AttemptedAt,
 			&i.CreatedAt,
 			&i.SyncedAt,
+			&i.ExternalCreatedAt,
 			&i.ObjectID,
 			&i.Kind,
 			&i.Namespace,
@@ -288,6 +296,46 @@ func (q *Queries) ResourceResetExpired(ctx context.Context, error []byte) ([]*De
 	return items, nil
 }
 
+const resourceSchedule = `-- name: ResourceSchedule :one
+UPDATE delta_resource
+SET state = 'scheduled',
+    synced_at = NULL,
+    object = $1,
+    hash = $2
+WHERE id = $3
+RETURNING delta_resource.id, delta_resource.state, delta_resource.attempt, delta_resource.max_attempts, delta_resource.attempted_at, delta_resource.created_at, delta_resource.synced_at, delta_resource.external_created_at, delta_resource.object_id, delta_resource.kind, delta_resource.namespace, delta_resource.object, delta_resource.hash, delta_resource.metadata, delta_resource.tags, delta_resource.errors
+`
+
+type ResourceScheduleParams struct {
+	Object []byte
+	Hash   []byte
+	ID     int64
+}
+
+func (q *Queries) ResourceSchedule(ctx context.Context, arg *ResourceScheduleParams) (*DeltaResource, error) {
+	row := q.db.QueryRow(ctx, resourceSchedule, arg.Object, arg.Hash, arg.ID)
+	var i DeltaResource
+	err := row.Scan(
+		&i.ID,
+		&i.State,
+		&i.Attempt,
+		&i.MaxAttempts,
+		&i.AttemptedAt,
+		&i.CreatedAt,
+		&i.SyncedAt,
+		&i.ExternalCreatedAt,
+		&i.ObjectID,
+		&i.Kind,
+		&i.Namespace,
+		&i.Object,
+		&i.Hash,
+		&i.Metadata,
+		&i.Tags,
+		&i.Errors,
+	)
+	return &i, err
+}
+
 const resourceSetState = `-- name: ResourceSetState :one
 UPDATE delta_resource
 SET state = CASE
@@ -303,7 +351,7 @@ SET state = CASE
         ELSE errors
     END
 WHERE id = $7
-RETURNING id, state, attempt, max_attempts, attempted_at, created_at, synced_at, object_id, kind, namespace, object, hash, metadata, tags, errors
+RETURNING id, state, attempt, max_attempts, attempted_at, created_at, synced_at, external_created_at, object_id, kind, namespace, object, hash, metadata, tags, errors
 `
 
 type ResourceSetStateParams struct {
@@ -335,6 +383,7 @@ func (q *Queries) ResourceSetState(ctx context.Context, arg *ResourceSetStatePar
 		&i.AttemptedAt,
 		&i.CreatedAt,
 		&i.SyncedAt,
+		&i.ExternalCreatedAt,
 		&i.ObjectID,
 		&i.Kind,
 		&i.Namespace,
@@ -349,7 +398,7 @@ func (q *Queries) ResourceSetState(ctx context.Context, arg *ResourceSetStatePar
 
 const resourceUpdateAndGetByObjectIDAndKind = `-- name: ResourceUpdateAndGetByObjectIDAndKind :one
 WITH locked_resource AS (
-    SELECT id, state, attempt, max_attempts, attempted_at, created_at, synced_at, object_id, kind, namespace, object, hash, metadata, tags, errors
+    SELECT id, state, attempt, max_attempts, attempted_at, created_at, synced_at, external_created_at, object_id, kind, namespace, object, hash, metadata, tags, errors
     FROM delta_resource dr
     WHERE dr.object_id = $1
         AND dr.kind = $2 FOR
@@ -362,7 +411,7 @@ SET state = 'pending',
     synced_at = NULL
 FROM locked_resource
 WHERE delta_resource.id = locked_resource.id
-RETURNING delta_resource.id, delta_resource.state, delta_resource.attempt, delta_resource.max_attempts, delta_resource.attempted_at, delta_resource.created_at, delta_resource.synced_at, delta_resource.object_id, delta_resource.kind, delta_resource.namespace, delta_resource.object, delta_resource.hash, delta_resource.metadata, delta_resource.tags, delta_resource.errors
+RETURNING delta_resource.id, delta_resource.state, delta_resource.attempt, delta_resource.max_attempts, delta_resource.attempted_at, delta_resource.created_at, delta_resource.synced_at, delta_resource.external_created_at, delta_resource.object_id, delta_resource.kind, delta_resource.namespace, delta_resource.object, delta_resource.hash, delta_resource.metadata, delta_resource.tags, delta_resource.errors
 `
 
 type ResourceUpdateAndGetByObjectIDAndKindParams struct {
@@ -381,6 +430,7 @@ func (q *Queries) ResourceUpdateAndGetByObjectIDAndKind(ctx context.Context, arg
 		&i.AttemptedAt,
 		&i.CreatedAt,
 		&i.SyncedAt,
+		&i.ExternalCreatedAt,
 		&i.ObjectID,
 		&i.Kind,
 		&i.Namespace,

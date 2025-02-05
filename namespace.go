@@ -26,6 +26,11 @@ type NamespaceConfig struct {
 	// ResourceExpiry is the duration (seconds) after which a previously
 	// synced resource is considered expired.
 	//
+	// This can be used to re-sync resources that may change or update in the
+	// external system that may not be automatically re-informed based on a
+	// creation time After filter. For immutable resources, this should NOT be set
+	// to prevent unnecessary work for objects that will never change.
+	//
 	// If this is set to 0, resources within the namespace will never expire.
 	// Defaults to 0 (resources never expire).
 	ResourceExpiry time.Duration
