@@ -120,12 +120,17 @@ func (q *Queries) ControllerListReady(ctx context.Context) ([]*DeltaController, 
 
 const controllerSetLastInformTime = `-- name: ControllerSetLastInformTime :exec
 UPDATE delta_controller
-SET last_inform_time = now(),
+SET last_inform_time = $1,
     updated_at = now()
-WHERE name = $1
+WHERE name = $2
 `
 
-func (q *Queries) ControllerSetLastInformTime(ctx context.Context, name string) error {
-	_, err := q.db.Exec(ctx, controllerSetLastInformTime, name)
+type ControllerSetLastInformTimeParams struct {
+	LastInformTime time.Time
+	Name           string
+}
+
+func (q *Queries) ControllerSetLastInformTime(ctx context.Context, arg *ControllerSetLastInformTimeParams) error {
+	_, err := q.db.Exec(ctx, controllerSetLastInformTime, arg.LastInformTime, arg.Name)
 	return err
 }

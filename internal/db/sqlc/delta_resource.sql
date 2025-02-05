@@ -25,6 +25,14 @@ SET state = 'pending',
 FROM locked_resource
 WHERE delta_resource.id = locked_resource.id
 RETURNING delta_resource.*;
+-- name: ResourceSchedule :one
+UPDATE delta_resource
+SET state = 'scheduled',
+    synced_at = NULL,
+    object = @object,
+    hash = @hash
+WHERE id = @id
+RETURNING delta_resource.*;
 -- name: ResourceSetState :one
 UPDATE delta_resource
 SET state = CASE
@@ -45,6 +53,7 @@ RETURNING *;
 INSERT INTO delta_resource (
         object_id,
         kind,
+        external_created_at,
         namespace,
         state,
         created_at,
@@ -54,14 +63,15 @@ INSERT INTO delta_resource (
         hash,
         max_attempts
     )
-VALUES ($1, $2, $3, $4, NOW(), $5, $6, $7, $8, $9) ON CONFLICT (object_id, kind) DO
+VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10) ON CONFLICT (object_id, kind) DO
 UPDATE
-SET state = $4,
-    object = $5,
-    metadata = $6,
-    tags = $7,
-    hash = $8,
-    max_attempts = $9
+SET external_created_at = $3,
+    state = $5,
+    object = $6,
+    metadata = $7,
+    tags = $8,
+    hash = $9,
+    max_attempts = $10
 RETURNING sqlc.embed(delta_resource),
     (xmax = 0) as is_insert;
 -- name: ResourceExpire :execrows

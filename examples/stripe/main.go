@@ -80,8 +80,9 @@ func healthz(w http.ResponseWriter, r *http.Request) {
 }
 
 type StripeCustomer struct {
-	CustomerID string
-	Email      string
+	CustomerID    string
+	Email         string
+	CreatedAtTime time.Time
 }
 
 func (c StripeCustomer) ID() string {
@@ -90,6 +91,10 @@ func (c StripeCustomer) ID() string {
 
 func (c StripeCustomer) Kind() string {
 	return "customer"
+}
+
+func (c StripeCustomer) CreatedAt() time.Time {
+	return c.CreatedAtTime
 }
 
 func (c StripeCustomer) InformOpts() delta.InformOpts {
@@ -140,9 +145,9 @@ func (c *customerController) Inform(ctx context.Context, opts *delta.InformOptio
 			if startingAfter != "" {
 				query.Add("starting_after", startingAfter)
 			}
-			// Add created[gt] parameter if Since is specified (Stripe's API uses unix seconds)
-			if opts != nil && opts.Since != nil && !opts.Since.IsZero() {
-				query.Add("created[gt]", strconv.FormatInt(opts.Since.Unix(), 10))
+			// Add created[gt] parameter if After is specified (Stripe's API uses unix seconds)
+			if opts != nil && opts.After != nil && !opts.After.IsZero() {
+				query.Add("created[gt]", strconv.FormatInt(opts.After.Unix(), 10))
 			}
 			// Stripe allows limit between 1 and 100
 			if opts != nil && opts.Limit > 0 {
@@ -174,8 +179,9 @@ func (c *customerController) Inform(ctx context.Context, opts *delta.InformOptio
 			var result struct {
 				HasMore bool `json:"has_more"`
 				Data    []struct {
-					ID    string `json:"id"`
-					Email string `json:"email"`
+					ID        string `json:"id"`
+					Email     string `json:"email"`
+					CreatedAt int64  `json:"created"`
 				} `json:"data"`
 			}
 
@@ -192,8 +198,9 @@ func (c *customerController) Inform(ctx context.Context, opts *delta.InformOptio
 				case <-ctx.Done():
 					return
 				case queue <- StripeCustomer{
-					CustomerID: customer.ID,
-					Email:      customer.Email,
+					CustomerID:    customer.ID,
+					Email:         customer.Email,
+					CreatedAtTime: time.Unix(customer.CreatedAt, 0),
 				}:
 				}
 			}

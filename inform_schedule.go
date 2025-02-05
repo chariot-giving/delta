@@ -53,7 +53,7 @@ func (w *controllerInformerScheduler) Work(ctx context.Context, job *river.Job[I
 
 	for _, controller := range controllers {
 		opts := InformOptions{
-			Since: &controller.LastInformTime,
+			After: &controller.LastInformTime,
 		}
 
 		res, err := riverClient.Insert(ctx, InformArgs[kindObject]{

@@ -31,7 +31,7 @@ WHERE inform_interval > '0'
 ORDER BY last_inform_time ASC;
 -- name: ControllerSetLastInformTime :exec
 UPDATE delta_controller
-SET last_inform_time = now(),
+SET last_inform_time = @last_inform_time,
     updated_at = now()
 WHERE name = @name;
 -- name: ControllerGet :one

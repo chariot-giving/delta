@@ -76,19 +76,20 @@ type DeltaNamespace struct {
 }
 
 type DeltaResource struct {
-	ID          int64
-	State       DeltaResourceState
-	Attempt     int16
-	MaxAttempts int16
-	AttemptedAt *time.Time
-	CreatedAt   time.Time
-	SyncedAt    *time.Time
-	ObjectID    string
-	Kind        string
-	Namespace   string
-	Object      []byte
-	Hash        []byte
-	Metadata    []byte
-	Tags        []string
-	Errors      [][]byte
+	ID                int64
+	State             DeltaResourceState
+	Attempt           int16
+	MaxAttempts       int16
+	AttemptedAt       *time.Time
+	CreatedAt         time.Time
+	SyncedAt          *time.Time
+	ExternalCreatedAt *time.Time
+	ObjectID          string
+	Kind              string
+	Namespace         string
+	Object            []byte
+	Hash              []byte
+	Metadata          []byte
+	Tags              []string
+	Errors            [][]byte
 }
