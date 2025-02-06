@@ -343,6 +343,9 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 		Queue:    object.Kind(),
 		Tags:     resourceRow.Tags,
 		Metadata: resourceRow.Metadata,
+		UniqueOpts: river.UniqueOpts{
+			ByArgs: true,
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("failed to enqueue resource: %w", err)
