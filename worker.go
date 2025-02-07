@@ -59,24 +59,32 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 
 	resource := job.Args
 
-	// we can't use a transaction here because it could deadlock the worker
-	// since the worker function runs application code and therefore could
-	// run their own nested (inner) transactions.
-	//
-	// We could use an advisory lock if we run into concurrency issues
-	// but at least for now, we are protecting against lock contention
-	// by enforcing argument uniqueness on this river job.
-	// Its not perfect but it should be good enough for now.
-	queries := sqlc.New(client.dbPool)
+	// use a db transaction to ensure we have a consistent view of the resource
+	// this is potentially a long-running transaction but we limit it via context timeout
+	// to ensure we always release the connection after a certain amount of time.
+	// https://www.postgresql.org/docs/current/applevel-consistency.html
+	tx, err := client.dbPool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	queries := sqlc.New(tx)
 
 	// first check that the resource still exists in the DB
 	// if it doesn't, we don't want to re-work it and instead can cancel the job
+	//
+	// This query is a SELECT FOR UPDATE, which locks the row for the duration of the transaction.
+	// Row-level locks do not affect data querying; they block only writers and lockers to the same row.
 	sqlcRow, err := queries.ResourceUpdateAndGetByObjectIDAndKind(ctx, &sqlc.ResourceUpdateAndGetByObjectIDAndKindParams{
 		ObjectID: job.Args.ObjectID,
 		Kind:     job.Args.ObjectKind,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			if err = tx.Commit(ctx); err != nil {
+				return fmt.Errorf("failed to commit transaction: %w", err)
+			}
 			return river.JobCancel(fmt.Errorf("resource %s:%s no longer exists: %w", resource.Object.Kind(), resource.Object.ID(), err))
 		}
 		return fmt.Errorf("failed to get resource: %w", err)
@@ -136,11 +144,11 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 				Column6:  errorData,
 			})
 			if derr != nil {
-				// handle no rows (since it's possible the delta resource record was deleted during the Work() call)
-				if errors.Is(derr, pgx.ErrNoRows) {
-					return river.JobCancel(fmt.Errorf("resource %s:%s no longer exists: %w", resource.Object.Kind(), resource.Object.ID(), err))
-				}
 				return fmt.Errorf("failed to set resource state to deleted: %w", derr)
+			}
+
+			if err = tx.Commit(ctx); err != nil {
+				return fmt.Errorf("failed to commit transaction: %w", err)
 			}
 
 			deletedRow := toResourceRow(deleted)
@@ -182,11 +190,11 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 			Column6:  errorData,
 		})
 		if uerr != nil {
-			// handle no rows (since it's possible the delta resource record was deleted during the Work() call)
-			if errors.Is(uerr, pgx.ErrNoRows) {
-				return river.JobCancel(fmt.Errorf("resource %s:%s no longer exists: %w", resource.Object.Kind(), resource.Object.ID(), wErr))
-			}
 			return uerr
+		}
+
+		if err = tx.Commit(ctx); err != nil {
+			return fmt.Errorf("failed to commit transaction: %w", err)
 		}
 
 		failedRow := toResourceRow(failed)
@@ -210,11 +218,11 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 		SyncedAt: &now,
 	})
 	if err != nil {
-		// handle no rows (since it's possible the delta resource record was deleted during the Work() call)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return river.JobCancel(fmt.Errorf("resource %s:%s no longer exists: %w", resource.Object.Kind(), resource.Object.ID(), err))
-		}
 		return err
+	}
+
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	syncedRow := toResourceRow(synced)
