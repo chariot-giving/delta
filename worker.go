@@ -233,5 +233,5 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 
 func (w *controllerWorker[T]) Timeout(job *river.Job[Resource[T]]) time.Duration {
 	// we enforce our own timeout so we want to remove River's underlying timeout on the job
-	return 1 * time.Minute
+	return -1
 }

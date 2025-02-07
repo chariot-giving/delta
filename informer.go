@@ -204,7 +204,7 @@ func (i *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformA
 
 func (i *controllerInformer[T]) Timeout(job *river.Job[InformArgs[T]]) time.Duration {
 	// we enforce our own timeout so we want to remove River's underlying timeout on the job
-	return 10 * time.Minute
+	return -1
 }
 
 func (i *controllerInformer[T]) processObject(ctx context.Context, object T, args *InformArgs[T]) error {
