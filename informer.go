@@ -137,6 +137,8 @@ func (i *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformA
 		Limit:   firstNonZero(job.Args.Options.Limit),
 	}
 
+	informStart := time.Now()
+
 	informFunc := func(ctx context.Context) error {
 		timeout := i.informer.InformTimeout(&job.Args)
 		if timeout == 0 {
@@ -156,26 +158,16 @@ func (i *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformA
 		}
 
 		numObjects := 0
-		var lastObjectCreatedAt time.Time
+		lastInformTimestamp := informStart
 		for {
 			select {
 			case obj, ok := <-queue:
 				if !ok {
 					// happy path: successfully informed all resources
-					if !job.Args.ProcessExisting && numObjects > 0 {
+					if !job.Args.ProcessExisting {
 						// only update the controller last inform time if we aren't processing existing resources.
-						// and we have informed at least one resource.
-						//
-						// default to use the current time but use the last object created time if it's before the current time
-						// to ensure complete coverage of resources in the case of potential race conditions
-						// e.g. situations where a resource is created after our informer finishes but before this
-						// point is reached.
-						lastInformTime := time.Now()
-						if !lastObjectCreatedAt.IsZero() && lastObjectCreatedAt.Before(lastInformTime) {
-							lastInformTime = lastObjectCreatedAt
-						}
 						err := queries.ControllerSetLastInformTime(ctx, &sqlc.ControllerSetLastInformTimeParams{
-							LastInformTime: lastInformTime,
+							LastInformTime: lastInformTimestamp,
 							Name:           controller.Name,
 						})
 						if err != nil {
@@ -185,8 +177,8 @@ func (i *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformA
 					return nil
 				}
 				if objWithCreatedAt, ok := Object(obj).(ObjectWithCreatedAt); ok {
-					if objWithCreatedAt.CreatedAt().After(lastObjectCreatedAt) {
-						lastObjectCreatedAt = objWithCreatedAt.CreatedAt()
+					if objWithCreatedAt.CreatedAt().After(lastInformTimestamp) {
+						lastInformTimestamp = objWithCreatedAt.CreatedAt()
 					}
 				}
 				numObjects++
@@ -295,6 +287,9 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 				Queue:    object.Kind(),
 				Tags:     resourceRow.Tags,
 				Metadata: resourceRow.Metadata,
+				UniqueOpts: river.UniqueOpts{
+					ByArgs: true,
+				},
 			})
 			if err != nil {
 				return err
@@ -343,6 +338,9 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 		Queue:    object.Kind(),
 		Tags:     resourceRow.Tags,
 		Metadata: resourceRow.Metadata,
+		UniqueOpts: river.UniqueOpts{
+			ByArgs: true,
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("failed to enqueue resource: %w", err)
@@ -366,7 +364,8 @@ func (i *controllerInformer[T]) compareObjects(object T, resource deltatype.Reso
 	}
 
 	// check hash
-	// we lose ordering with the hash (that's why we prefer the object comparison)
+	// we lose chronological ordering with the hash (that's why we prefer the object comparison)
+	// TODO: use deterministic ordering of fields to ensure consistent hash
 	objBytes, err := json.Marshal(object)
 	if err != nil {
 		return 0, err

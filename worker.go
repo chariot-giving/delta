@@ -73,6 +73,7 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 
 	// first check that the resource still exists in the DB
 	// if it doesn't, we don't want to re-work it and instead can cancel the job
+	//
 	// This query is a SELECT FOR UPDATE, which locks the row for the duration of the transaction.
 	// Row-level locks do not affect data querying; they block only writers and lockers to the same row.
 	sqlcRow, err := queries.ResourceUpdateAndGetByObjectIDAndKind(ctx, &sqlc.ResourceUpdateAndGetByObjectIDAndKindParams{
@@ -92,7 +93,7 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 	resourceRow := toResourceRow(sqlcRow)
 
 	// should we use the DB resource row or the job.Args resource?
-	logger.DebugContext(ctx, "working resource", "id", resourceRow.ID, "resource_id", resourceRow.ID, "resource_kind", resourceRow.Kind, "attempt", resourceRow.Attempt)
+	logger.DebugContext(ctx, "working resource", "id", resourceRow.ID, "resource_id", resourceRow.ID, "resource_kind", resourceRow.Kind(), "attempt", resourceRow.Attempt)
 
 	object := w.factory.Make(&resourceRow)
 	if err := object.UnmarshalResource(); err != nil {
@@ -119,16 +120,16 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 	}
 
 	// do the work!
-	err = workFunc(ctx)
-	if err != nil {
+	wErr := workFunc(ctx)
+	if wErr != nil {
 		// handle resource delete error
 		deleteErr := new(ResourceDeleteError)
-		if errors.Is(err, deleteErr) {
+		if errors.Is(wErr, deleteErr) {
 			now := time.Now().UTC()
 			errorData, err := json.Marshal(deltatype.AttemptError{
 				At:      now,
 				Attempt: resourceRow.Attempt,
-				Error:   err.Error(),
+				Error:   wErr.Error(),
 			})
 			if err != nil {
 				return fmt.Errorf("error marshaling error JSON: %w", err)
@@ -143,14 +144,11 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 				Column6:  errorData,
 			})
 			if derr != nil {
-				// handle no rows (since it's possible the delta resource record was deleted during the Work() call)
-				if errors.Is(derr, pgx.ErrNoRows) {
-					if err = tx.Commit(ctx); err != nil {
-						return fmt.Errorf("failed to commit transaction: %w", err)
-					}
-					return river.JobCancel(fmt.Errorf("resource %s:%s no longer exists: %w", resource.Object.Kind(), resource.Object.ID(), err))
-				}
 				return fmt.Errorf("failed to set resource state to deleted: %w", derr)
+			}
+
+			if err = tx.Commit(ctx); err != nil {
+				return fmt.Errorf("failed to commit transaction: %w", err)
 			}
 
 			deletedRow := toResourceRow(deleted)
@@ -162,11 +160,7 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 				},
 			}
 
-			if err = tx.Commit(ctx); err != nil {
-				return fmt.Errorf("failed to commit transaction: %w", err)
-			}
-
-			return river.JobCancel(fmt.Errorf("resource deleted: %w", err))
+			return river.JobCancel(fmt.Errorf("resource deleted: %w", wErr))
 		}
 
 		state := sqlc.DeltaResourceStateFailed
@@ -174,13 +168,13 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 			state = sqlc.DeltaResourceStateDegraded
 		}
 
-		logger.WarnContext(ctx, "resource failed", "attempt", resourceRow.Attempt, "state", state, "error", err)
+		logger.WarnContext(ctx, "resource failed", "attempt", resourceRow.Attempt, "state", state, "error", wErr)
 
 		now := time.Now().UTC()
 		errorData, err := json.Marshal(deltatype.AttemptError{
 			At:      now,
 			Attempt: resourceRow.Attempt,
-			Error:   err.Error(),
+			Error:   wErr.Error(),
 		})
 		if err != nil {
 			return fmt.Errorf("error marshaling error JSON: %w", err)
@@ -196,14 +190,11 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 			Column6:  errorData,
 		})
 		if uerr != nil {
-			// handle no rows (since it's possible the delta resource record was deleted during the Work() call)
-			if errors.Is(uerr, pgx.ErrNoRows) {
-				if err = tx.Commit(ctx); err != nil {
-					return fmt.Errorf("failed to commit transaction: %w", err)
-				}
-				return river.JobCancel(fmt.Errorf("resource %s:%s no longer exists: %w", resource.Object.Kind(), resource.Object.ID(), err))
-			}
 			return uerr
+		}
+
+		if err = tx.Commit(ctx); err != nil {
+			return fmt.Errorf("failed to commit transaction: %w", err)
 		}
 
 		failedRow := toResourceRow(failed)
@@ -215,11 +206,7 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 			},
 		}
 
-		if err = tx.Commit(ctx); err != nil {
-			return fmt.Errorf("failed to commit transaction: %w", err)
-		}
-
-		return err
+		return wErr
 	}
 
 	now := time.Now()
@@ -231,14 +218,11 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 		SyncedAt: &now,
 	})
 	if err != nil {
-		// handle no rows (since it's possible the delta resource record was deleted during the Work() call)
-		if errors.Is(err, pgx.ErrNoRows) {
-			if err = tx.Commit(ctx); err != nil {
-				return fmt.Errorf("failed to commit transaction: %w", err)
-			}
-			return river.JobCancel(fmt.Errorf("resource %s:%s no longer exists: %w", resource.Object.Kind(), resource.Object.ID(), err))
-		}
 		return err
+	}
+
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	syncedRow := toResourceRow(synced)
@@ -248,10 +232,6 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 			EventCategory: EventCategoryObjectSynced,
 			Timestamp:     time.Now(),
 		},
-	}
-
-	if err = tx.Commit(ctx); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	logger.InfoContext(ctx, "finished working resource", "id", resource.ID, "resource_id", resource.Object.ID(), "resource_kind", resource.Object.Kind())
