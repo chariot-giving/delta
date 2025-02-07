@@ -85,7 +85,7 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 	resourceRow := toResourceRow(sqlcRow)
 
 	// should we use the DB resource row or the job.Args resource?
-	logger.DebugContext(ctx, "working resource", "id", resourceRow.ID, "resource_id", resourceRow.ID, "resource_kind", resourceRow.Kind, "attempt", resourceRow.Attempt)
+	logger.DebugContext(ctx, "working resource", "id", resourceRow.ID, "resource_id", resourceRow.ID, "resource_kind", resourceRow.Kind(), "attempt", resourceRow.Attempt)
 
 	object := w.factory.Make(&resourceRow)
 	if err := object.UnmarshalResource(); err != nil {
@@ -112,16 +112,16 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 	}
 
 	// do the work!
-	err = workFunc(ctx)
-	if err != nil {
+	wErr := workFunc(ctx)
+	if wErr != nil {
 		// handle resource delete error
 		deleteErr := new(ResourceDeleteError)
-		if errors.Is(err, deleteErr) {
+		if errors.Is(wErr, deleteErr) {
 			now := time.Now().UTC()
 			errorData, err := json.Marshal(deltatype.AttemptError{
 				At:      now,
 				Attempt: resourceRow.Attempt,
-				Error:   err.Error(),
+				Error:   wErr.Error(),
 			})
 			if err != nil {
 				return fmt.Errorf("error marshaling error JSON: %w", err)
@@ -152,7 +152,7 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 				},
 			}
 
-			return river.JobCancel(fmt.Errorf("resource deleted: %w", err))
+			return river.JobCancel(fmt.Errorf("resource deleted: %w", wErr))
 		}
 
 		state := sqlc.DeltaResourceStateFailed
@@ -160,13 +160,13 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 			state = sqlc.DeltaResourceStateDegraded
 		}
 
-		logger.WarnContext(ctx, "resource failed", "attempt", resourceRow.Attempt, "state", state, "error", err)
+		logger.WarnContext(ctx, "resource failed", "attempt", resourceRow.Attempt, "state", state, "error", wErr)
 
 		now := time.Now().UTC()
 		errorData, err := json.Marshal(deltatype.AttemptError{
 			At:      now,
 			Attempt: resourceRow.Attempt,
-			Error:   err.Error(),
+			Error:   wErr.Error(),
 		})
 		if err != nil {
 			return fmt.Errorf("error marshaling error JSON: %w", err)
@@ -184,7 +184,7 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 		if uerr != nil {
 			// handle no rows (since it's possible the delta resource record was deleted during the Work() call)
 			if errors.Is(uerr, pgx.ErrNoRows) {
-				return river.JobCancel(fmt.Errorf("resource %s:%s no longer exists: %w", resource.Object.Kind(), resource.Object.ID(), err))
+				return river.JobCancel(fmt.Errorf("resource %s:%s no longer exists: %w", resource.Object.Kind(), resource.Object.ID(), wErr))
 			}
 			return uerr
 		}
@@ -198,7 +198,7 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 			},
 		}
 
-		return err
+		return wErr
 	}
 
 	now := time.Now()
@@ -233,5 +233,5 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 
 func (w *controllerWorker[T]) Timeout(job *river.Job[Resource[T]]) time.Duration {
 	// we enforce our own timeout so we want to remove River's underlying timeout on the job
-	return -1
+	return 1 * time.Minute
 }
