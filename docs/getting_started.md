@@ -15,15 +15,40 @@ To install Delta, run the following in the directory of a Go project (where a go
 go get github.com/chariot-giving/delta
 ```
 
+We rely on Goose to run database migrations:
+
+```bash
+go install github.com/pressly/goose/v3/cmd/goose@latest
+```
+
+Finally, install the River CLI tool:
+
+```bash
+go install github.com/riverqueue/river/cmd/river@latest
+```
+
 ## Running Migrations
+
+Run a Postgres database locally with Docker:
+
+```bash
+docker run --name delta-db -e POSTGRES_PASSWORD=password -e POSTGRES_USER=delta -e POSTGRES_DB=delta -p 5431:5432 -d postgres:16
+```
+
+Connect to the database and create the Delta schema:
+
+```bash
+$ pgcli "postgres://delta:password@localhost:5431/delta"
+> CREATE SCHEMA delta;
+```
 
 Delta persists resource state to a Postgres database, and needs a small set of tables created to manage resources and orchestrate controllers.
 It relies on [goose](https://github.com/pressly/goose) to run migrations.
 
 ```bash
-GOOSE_DRIVER=postgres
-GOOSE_DBSTRING=postgres://delta:password@localhost:5431/delta?search_path=delta
-GOOSE_MIGRATION_DIR=./internal/db/migrations
+export GOOSE_DRIVER=postgres
+export GOOSE_DBSTRING=postgres://delta:password@localhost:5431/delta?search_path=delta
+export GOOSE_MIGRATION_DIR=./internal/db/migrations
 goose up
 goose status
 ```
