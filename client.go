@@ -383,6 +383,14 @@ func (c *Client) InformTx(ctx context.Context, tx pgx.Tx, object Object, opts *I
 		}
 	}
 
+	metadata := opts.Metadata
+	if opts.Metadata == nil {
+		metadata = objectInformOpts.Metadata
+	}
+	if metadata == nil {
+		metadata = []byte(`{}`)
+	}
+
 	objBytes, err := json.Marshal(object)
 	if err != nil {
 		return nil, err
@@ -405,7 +413,7 @@ func (c *Client) InformTx(ctx context.Context, tx pgx.Tx, object Object, opts *I
 		Namespace:         namespace,
 		State:             sqlc.DeltaResourceStateScheduled,
 		Object:            objBytes,
-		Metadata:          objectInformOpts.Metadata,
+		Metadata:          metadata,
 		Tags:              tags,
 		Hash:              hash[:],
 		ExternalCreatedAt: externalCreatedAt,
