@@ -61,9 +61,10 @@ INSERT INTO delta_resource (
         metadata,
         tags,
         hash,
-        max_attempts
+        max_attempts,
+        synced_at
     )
-VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10) ON CONFLICT (object_id, kind) DO
+VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10, NULL) ON CONFLICT (object_id, kind) DO
 UPDATE
 SET external_created_at = $3,
     state = $5,
@@ -71,7 +72,8 @@ SET external_created_at = $3,
     metadata = $7,
     tags = $8,
     hash = $9,
-    max_attempts = $10
+    max_attempts = $10,
+    synced_at = NULL
 RETURNING sqlc.embed(delta_resource),
     (xmax = 0) as is_insert;
 -- name: ResourceExpire :execrows
