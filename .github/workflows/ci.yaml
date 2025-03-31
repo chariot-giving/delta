@@ -17,7 +17,7 @@ jobs:
         postgres-version: [14, 15, 16, 17]
         include:
           # Also run previous Go version against the latest Postgres version:
-          - go-version: "1.22"
+          - go-version: "1.23"
             postgres-version: 17
       fail-fast: false
     timeout-minutes: 5
