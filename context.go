@@ -23,6 +23,10 @@ func (m *jobContextMiddleware) Work(ctx context.Context, job *rivertype.JobRow, 
 	return doInner(withClient(ctx, m.client))
 }
 
+func (m *jobContextMiddleware) IsMiddleware() bool {
+	return true
+}
+
 // ClientFromContext returns the Client from the context. This function can
 // only be used within a Controller's Work() or Inform() methods because that is the only place
 // Delta sets the Client on the context.
