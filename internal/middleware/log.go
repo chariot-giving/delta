@@ -18,6 +18,10 @@ func NewLoggingMiddleware(logger *slog.Logger) rivertype.WorkerMiddleware {
 	return &loggingMiddleware{logger: logger}
 }
 
+func (m *loggingMiddleware) IsMiddleware() bool {
+	return true
+}
+
 func (m *loggingMiddleware) Work(ctx context.Context, job *rivertype.JobRow, doInner func(context.Context) error) error {
 	logger := m.logger.WithGroup("riverjob").With("job_id", job.ID).With("job_kind", job.Kind)
 	newCtx := context.WithValue(ctx, contextKeyLogger{}, logger)
