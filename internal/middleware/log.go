@@ -5,12 +5,14 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 )
 
 type contextKeyLogger struct{}
 
 type loggingMiddleware struct {
+	river.MiddlewareDefaults
 	logger *slog.Logger
 }
 
