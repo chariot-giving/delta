@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 )
 
@@ -16,6 +17,7 @@ func withClient(ctx context.Context, client *Client) context.Context {
 }
 
 type jobContextMiddleware struct {
+	river.MiddlewareDefaults
 	client *Client
 }
 
