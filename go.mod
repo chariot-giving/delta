@@ -1,8 +1,6 @@
 module github.com/chariot-giving/delta
 
-go 1.23.0
-
-toolchain go1.24.0
+go 1.24
 
 require (
 	github.com/jackc/pgx/v5 v5.7.4
