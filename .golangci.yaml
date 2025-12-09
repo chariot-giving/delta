@@ -166,7 +166,7 @@ linters:
     paths:
       - third_party$
       - builtin$
-      - examples$
+      - examples/
 formatters:
   enable:
     - gci
@@ -184,4 +184,4 @@ formatters:
     paths:
       - third_party$
       - builtin$
-      - examples$
+      - examples/
