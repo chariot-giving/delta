@@ -1,107 +1,187 @@
-issues:
-  exclude:
-    - 'Error return value of .(\w+\.Rollback(.*)). is not checked'
-
+version: "2"
 linters:
-  presets:
-    - bugs
-    - comment
-    - format
-    - performance
-    - style
-    - test
-    - unused
-
+  enable:
+    - asasalint
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - canonicalheader
+    - containedctx
+    - contextcheck
+    - decorder
+    - depguard
+    - dogsled
+    - dupl
+    - dupword
+    - durationcheck
+    - errchkjson
+    - errname
+    - errorlint
+    - exhaustive
+    - exptostd
+    - fatcontext
+    - forbidigo
+    - forcetypeassert
+    - ginkgolinter
+    - gocheckcompilerdirectives
+    - gochecknoglobals
+    - gochecknoinits
+    - gochecksumtype
+    - goconst
+    - gocritic
+    - godot
+    - goheader
+    - gomoddirectives
+    - gomodguard
+    - goprintffuncname
+    - gosec
+    - gosmopolitan
+    - grouper
+    - iface
+    - importas
+    - inamedparam
+    - loggercheck
+    - makezero
+    - mirror
+    - misspell
+    - musttag
+    - nakedret
+    - nilerr
+    - nilnesserr
+    - nilnil
+    - noctx
+    - nolintlint
+    - nonamedreturns
+    - nosprintfhostport
+    - paralleltest
+    - perfsprint
+    - prealloc
+    - predeclared
+    - promlinter
+    - protogetter
+    - reassign
+    - recvcheck
+    - revive
+    - rowserrcheck
+    - sloglint
+    - spancheck
+    - sqlclosecheck
+    - staticcheck
+    - tagalign
+    - tagliatelle
+    - testableexamples
+    - testifylint
+    - thelper
+    - tparallel
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - usetesting
+    - varnamelen
+    - wastedassign
+    - whitespace
+    - zerologlint
   disable:
-    # disabled, but which we should enable after dropping support for Go 1.21 as
-    # they're kind of a good idea
-    - copyloopvar # lints to make sure that loop variables are _not_ captured since it's not required in Go 1.22+
-    - intrange # encourages for loops to range over integers like `for i := range(5)` instead of a C-style for
-
-    # disabled, but which we should enable with discussion
-    - wrapcheck # checks that errors are wrapped; currently not done anywhere
-
-    # disabled because we're not compliant, but which we should think about
-    - exhaustruct # checks that properties in structs are exhaustively defined; may be a good idea
-    - testpackage # requires tests in test packages like `river_test`
-
-    # disabled because they're annoying/bad
-    - interfacebloat # we do in fact want >10 methods on the Adapter interface or wherever we see fit.
-    - godox # bans TODO statements; total non-starter at the moment
-    - err113 # wants all errors to be defined as variables at the package level; quite obnoxious
-    - mnd # detects "magic numbers", which it defines as any number; annoying
-    - ireturn # bans returning interfaces; questionable as is, but also buggy as hell; very, very annoying
-    - lll # restricts maximum line length; annoying
-    - nlreturn # requires a blank line before returns; annoying
-    - wsl # a bunch of style/whitespace stuff; annoying
-
-linters-settings:
-  depguard:
-    rules:
-      all:
-        files: ["$all"]
-        allow:
-        deny:
-          - desc: "Use `github.com/google/uuid` package for UUIDs instead."
-            pkg: "github.com/xtgo/uuid"
-      not-test:
-        files: ["!$test"]
-        deny:
-          - desc: "Don't use `dbadaptertest` package outside of test environments."
-            pkg: "github.com/riverqueue/river/internal/dbadaptertest"
-          - desc: "Don't use `riverinternaltest` package outside of test environments."
-            pkg: "github.com/riverqueue/river/internal/riverinternaltest"
-
-  forbidigo:
-    forbid:
-      - msg: "Use `require` variants instead."
-        p: '^assert\.'
-      - msg: "Use `Func` suffix for function variables instead."
-        p: 'Fn\b'
-      - msg: "Use built-in `max` function instead."
-        p: '\bmath\.Max\b'
-      - msg: "Use built-in `min` function instead."
-        p: '\bmath\.Min\b'
-
-  gci:
-    sections:
-      - Standard
-      - Default
-      - Prefix(github.com/chariot-giving)
-
-  gomoddirectives:
-    replace-local: true
-
-  gosec:
-    excludes:
-      - G404 # use of non-crypto random; overly broad for our use case
-
-  revive:
-    rules:
-      - name: unused-parameter
-        disabled: true
-
-  tagliatelle:
-    case:
+    - copyloopvar
+    - err113
+    - exhaustruct
+    - godox
+    - interfacebloat
+    - intrange
+    - ireturn
+    - lll
+    - mnd
+    - nlreturn
+    - testpackage
+    - wrapcheck
+    - wsl
+  settings:
+    depguard:
       rules:
-        json: snake
-
-  testifylint:
-    enable-all: true
-    disable:
-      - go-require
-
-  varnamelen:
-    ignore-names:
-      - db
-      - eg
-      - f
-      - i
-      - id
-      - j
-      - mu
-      - sb # common convention for string builder
-      - t
-      - tt # common convention for table tests
-      - tx
-      - wg
+        all:
+          files:
+            - $all
+          deny:
+            - pkg: github.com/xtgo/uuid
+              desc: Use `github.com/google/uuid` package for UUIDs instead.
+        not-test:
+          files:
+            - '!$test'
+          deny:
+            - pkg: github.com/riverqueue/river/internal/dbadaptertest
+              desc: Don't use `dbadaptertest` package outside of test environments.
+            - pkg: github.com/riverqueue/river/internal/riverinternaltest
+              desc: Don't use `riverinternaltest` package outside of test environments.
+    forbidigo:
+      forbid:
+        - pattern: ^assert\.
+          msg: Use `require` variants instead.
+        - pattern: Fn\b
+          msg: Use `Func` suffix for function variables instead.
+        - pattern: \bmath\.Max\b
+          msg: Use built-in `max` function instead.
+        - pattern: \bmath\.Min\b
+          msg: Use built-in `min` function instead.
+    gomoddirectives:
+      replace-local: true
+    gosec:
+      excludes:
+        - G404
+    revive:
+      rules:
+        - name: unused-parameter
+          disabled: true
+    tagliatelle:
+      case:
+        rules:
+          json: snake
+    testifylint:
+      enable-all: true
+      disable:
+        - go-require
+    varnamelen:
+      ignore-names:
+        - db
+        - eg
+        - f
+        - i
+        - id
+        - j
+        - mu
+        - sb
+        - t
+        - tt
+        - tx
+        - wg
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - path: (.+)\.go$
+        text: Error return value of .(\w+\.Rollback(.*)). is not checked
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - gofumpt
+    - goimports
+  settings:
+    gci:
+      sections:
+        - Standard
+        - Default
+        - Prefix(github.com/chariot-giving)
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
