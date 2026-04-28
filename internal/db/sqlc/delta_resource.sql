@@ -127,3 +127,22 @@ WHERE id IN (
         WHERE state = 'expired'
     )
 RETURNING *;
+-- name: ResourceRescueStuckScheduled :many
+-- Find resources stuck in the 'scheduled' state past the grace period and reset
+-- them to 'pending' so the rescheduler can re-enqueue a scheduler job for them.
+-- This protects against orphaning when the corresponding River job is discarded
+-- externally
+UPDATE delta_resource
+SET state = 'pending',
+    synced_at = NULL,
+    errors = array_append(errors, @error::jsonb)
+WHERE id IN (
+        SELECT id
+        FROM delta_resource
+        WHERE state = 'scheduled'
+            AND EXTRACT(
+                EPOCH
+                FROM (NOW() - COALESCE(attempted_at, created_at))
+            ) > @stuck_horizon::integer
+    )
+RETURNING *;
