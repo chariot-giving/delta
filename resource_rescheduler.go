@@ -86,7 +86,9 @@ func (r *rescheduler) Work(ctx context.Context, job *river.Job[RescheduleResourc
 		return err
 	}
 
-	resources := append(expired, rescued...)
+	resources := make([]*sqlc.DeltaResource, 0, len(expired)+len(rescued))
+	resources = append(resources, expired...)
+	resources = append(resources, rescued...)
 
 	if len(resources) > 0 {
 		insertParams := make([]river.InsertManyParams, len(resources))
