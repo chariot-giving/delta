@@ -248,6 +248,69 @@ func (q *Queries) ResourceGetByObjectIDAndKind(ctx context.Context, arg *Resourc
 	return &i, err
 }
 
+const resourceRescueStuckScheduled = `-- name: ResourceRescueStuckScheduled :many
+UPDATE delta_resource
+SET state = 'pending',
+    synced_at = NULL,
+    errors = array_append(errors, $1::jsonb)
+WHERE id IN (
+        SELECT id
+        FROM delta_resource
+        WHERE state = 'scheduled'
+            AND EXTRACT(
+                EPOCH
+                FROM (NOW() - COALESCE(attempted_at, created_at))
+            ) > $2::integer
+    )
+RETURNING id, state, attempt, max_attempts, attempted_at, created_at, synced_at, external_created_at, object_id, kind, namespace, object, hash, metadata, tags, errors
+`
+
+type ResourceRescueStuckScheduledParams struct {
+	Error        []byte
+	StuckHorizon int32
+}
+
+// Find resources stuck in the 'scheduled' state past the grace period and reset
+// them to 'pending' so the rescheduler can re-enqueue a scheduler job for them.
+// This protects against orphaning when the corresponding River job is discarded
+// externally
+func (q *Queries) ResourceRescueStuckScheduled(ctx context.Context, arg *ResourceRescueStuckScheduledParams) ([]*DeltaResource, error) {
+	rows, err := q.db.Query(ctx, resourceRescueStuckScheduled, arg.Error, arg.StuckHorizon)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []*DeltaResource
+	for rows.Next() {
+		var i DeltaResource
+		if err := rows.Scan(
+			&i.ID,
+			&i.State,
+			&i.Attempt,
+			&i.MaxAttempts,
+			&i.AttemptedAt,
+			&i.CreatedAt,
+			&i.SyncedAt,
+			&i.ExternalCreatedAt,
+			&i.ObjectID,
+			&i.Kind,
+			&i.Namespace,
+			&i.Object,
+			&i.Hash,
+			&i.Metadata,
+			&i.Tags,
+			&i.Errors,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, &i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const resourceResetExpired = `-- name: ResourceResetExpired :many
 UPDATE delta_resource
 SET state = 'pending',

@@ -29,7 +29,8 @@ func (r RescheduleResourceArgs) InsertOpts() river.InsertOpts {
 }
 
 type rescheduler struct {
-	pool *pgxpool.Pool
+	pool                    *pgxpool.Pool
+	stuckScheduledThreshold time.Duration
 	river.WorkerDefaults[RescheduleResourceArgs]
 }
 
@@ -41,10 +42,20 @@ func (r *rescheduler) Work(ctx context.Context, job *river.Job[RescheduleResourc
 	}
 
 	now := time.Now().UTC()
-	errorData, err := json.Marshal(deltatype.AttemptError{
+	expiredErrorData, err := json.Marshal(deltatype.AttemptError{
 		At:      now,
 		Attempt: max(job.Attempt, 0),
 		Error:   "Expired resource reset by Resource Re-scheduler",
+		Trace:   "TODO",
+	})
+	if err != nil {
+		return fmt.Errorf("error marshaling error JSON: %w", err)
+	}
+
+	stuckErrorData, err := json.Marshal(deltatype.AttemptError{
+		At:      now,
+		Attempt: max(job.Attempt, 0),
+		Error:   "Stuck scheduled resource rescued by Resource Re-scheduler",
 		Trace:   "TODO",
 	})
 	if err != nil {
@@ -59,11 +70,25 @@ func (r *rescheduler) Work(ctx context.Context, job *river.Job[RescheduleResourc
 
 	queries := sqlc.New(tx)
 
-	resources, err := queries.ResourceResetExpired(ctx, errorData)
+	expired, err := queries.ResourceResetExpired(ctx, expiredErrorData)
 	if err != nil {
 		logger.ErrorContext(ctx, "error resetting expired resources", "error", err)
 		return err
 	}
+
+	stuckHorizonSeconds := int32(r.stuckScheduledThreshold.Seconds())
+	rescued, err := queries.ResourceRescueStuckScheduled(ctx, &sqlc.ResourceRescueStuckScheduledParams{
+		Error:        stuckErrorData,
+		StuckHorizon: stuckHorizonSeconds,
+	})
+	if err != nil {
+		logger.ErrorContext(ctx, "error rescuing stuck scheduled resources", "error", err)
+		return err
+	}
+
+	resources := make([]*sqlc.DeltaResource, 0, len(expired)+len(rescued))
+	resources = append(resources, expired...)
+	resources = append(resources, rescued...)
 
 	if len(resources) > 0 {
 		insertParams := make([]river.InsertManyParams, len(resources))
@@ -86,9 +111,9 @@ func (r *rescheduler) Work(ctx context.Context, job *river.Job[RescheduleResourc
 			return err
 		}
 
-		logger.InfoContext(ctx, "rescheduled expired resources", "count", len(resources))
+		logger.InfoContext(ctx, "rescheduled resources", "expired", len(expired), "rescued_stuck", len(rescued))
 	} else {
-		logger.DebugContext(ctx, "no expired resources to reschedule")
+		logger.DebugContext(ctx, "no resources to reschedule")
 	}
 
 	if err := tx.Commit(ctx); err != nil {

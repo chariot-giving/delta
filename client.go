@@ -100,6 +100,14 @@ type Config struct {
 	//
 	// Defaults to 24 hours.
 	DegradedResourceRetentionPeriod time.Duration
+
+	// StuckScheduledThreshold is the grace period after which a resource still in
+	// the 'scheduled' state is considered orphaned (its River scheduler job is gone)
+	// and will be rescued by the rescheduler. Should be comfortably longer than the
+	// normal scheduler latency to avoid racing with in-flight scheduling.
+	//
+	// Defaults to an hour.
+	StuckScheduledThreshold time.Duration
 }
 
 // Client is a single isolated instance of Delta. Your application may use
@@ -132,6 +140,7 @@ func NewClient(dbPool *pgxpool.Pool, config *Config) (*Client, error) {
 
 	config.ResourceWorkTimeout = firstNonZero(config.ResourceWorkTimeout, time.Minute*1)
 	config.ControllerInformTimeout = firstNonZero(config.ControllerInformTimeout, time.Minute*1)
+	config.StuckScheduledThreshold = firstNonZero(config.StuckScheduledThreshold, time.Hour*1)
 
 	client := &Client{
 		config:  config,
@@ -184,7 +193,10 @@ func NewClient(dbPool *pgxpool.Pool, config *Config) (*Client, error) {
 		if err := river.AddWorkerSafely(client.workers, &controllerInformerScheduler{pool: client.dbPool}); err != nil {
 			return nil, fmt.Errorf("error adding controller informer scheduler worker: %w", err)
 		}
-		if err := river.AddWorkerSafely(client.workers, &rescheduler{pool: client.dbPool}); err != nil {
+		if err := river.AddWorkerSafely(client.workers, &rescheduler{
+			pool:                    client.dbPool,
+			stuckScheduledThreshold: config.StuckScheduledThreshold,
+		}); err != nil {
 			return nil, fmt.Errorf("error adding rescheduler worker: %w", err)
 		}
 
