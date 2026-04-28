@@ -272,8 +272,8 @@ type ResourceRescueStuckScheduledParams struct {
 
 // Find resources stuck in the 'scheduled' state past the grace period and reset
 // them to 'pending' so the rescheduler can re-enqueue a scheduler job for them.
-// This protects against orphaning when the corresponding River job is killed
-// externally (e.g. peer-rescuer discard) and never retried.
+// This protects against orphaning when the corresponding River job is discarded
+// externally
 func (q *Queries) ResourceRescueStuckScheduled(ctx context.Context, arg *ResourceRescueStuckScheduledParams) ([]*DeltaResource, error) {
 	rows, err := q.db.Query(ctx, resourceRescueStuckScheduled, arg.Error, arg.StuckHorizon)
 	if err != nil {
