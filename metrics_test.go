@@ -65,14 +65,14 @@ func TestNoopMetrics_DoesNotPanic(t *testing.T) {
 func TestRecordingMetrics_Captures(t *testing.T) {
 	t.Parallel()
 
-	r := &recordingMetrics{}
-	var m MetricsCollector = r
-	m.Counter(context.Background(), MetricInformObjects, 1, map[string]string{"kind": "k1", "result": ObjectResultCreated})
-	m.Histogram(context.Background(), MetricWorkDuration, 0.5, map[string]string{"kind": "k1", "state": "synced"})
+	rec := &recordingMetrics{}
+	var collector MetricsCollector = rec
+	collector.Counter(context.Background(), MetricInformObjects, 1, map[string]string{"kind": "k1", "result": ObjectResultCreated})
+	collector.Histogram(context.Background(), MetricWorkDuration, 0.5, map[string]string{"kind": "k1", "state": "synced"})
 
-	require.Len(t, r.counters, 1)
-	require.Equal(t, MetricInformObjects, r.counters[0].name)
-	require.Equal(t, ObjectResultCreated, r.counters[0].labels["result"])
-	require.Len(t, r.histograms, 1)
-	require.Equal(t, MetricWorkDuration, r.histograms[0].name)
+	require.Len(t, rec.counters, 1)
+	require.Equal(t, MetricInformObjects, rec.counters[0].name)
+	require.Equal(t, ObjectResultCreated, rec.counters[0].labels["result"])
+	require.Len(t, rec.histograms, 1)
+	require.Equal(t, MetricWorkDuration, rec.histograms[0].name)
 }

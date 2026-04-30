@@ -130,9 +130,7 @@ type Client struct {
 	metrics             MetricsCollector
 }
 
-var (
-	errMissingConfig = errors.New("missing config")
-)
+var errMissingConfig = errors.New("missing config")
 
 func NewClient(dbPool *pgxpool.Pool, config *Config) (*Client, error) {
 	if config == nil {
@@ -391,20 +389,20 @@ func (c *Client) Start(ctx context.Context) error {
 // kind by config — any namespace can hold any kind — so we conservatively
 // validate against every configured namespace.
 func (c *Config) validateReconcileRetention(kind string, reconcileInterval time.Duration) error {
-	for namespace, ns := range c.Namespaces {
+	for namespace, nsConfig := range c.Namespaces {
 		// ResourceExpiry: synced rows are flipped to expired and re-worked
 		// after this duration. Reconciliation needs to win the race so it
 		// can observe the synced state before the expirer perturbs it.
-		if ns.ResourceExpiry > 0 && reconcileInterval >= ns.ResourceExpiry {
+		if nsConfig.ResourceExpiry > 0 && reconcileInterval >= nsConfig.ResourceExpiry {
 			return fmt.Errorf(
 				"controller %q ReconciliationInterval (%s) must be shorter than namespace %q ResourceExpiry (%s); otherwise resources will be expired before reconciliation can observe them",
-				kind, reconcileInterval, namespace, ns.ResourceExpiry,
+				kind, reconcileInterval, namespace, nsConfig.ResourceExpiry,
 			)
 		}
 		// SyncedResourceRetentionPeriod: synced rows are hard-deleted
 		// after this duration. Reconciliation needs them to still exist.
-		retention := firstNonZero(ns.SyncedResourceRetentionPeriod, c.SyncedResourceRetentionPeriod)
-		if retention > 0 && ns.ResourceExpiry == 0 && reconcileInterval >= retention {
+		retention := firstNonZero(nsConfig.SyncedResourceRetentionPeriod, c.SyncedResourceRetentionPeriod)
+		if retention > 0 && nsConfig.ResourceExpiry == 0 && reconcileInterval >= retention {
 			return fmt.Errorf(
 				"controller %q ReconciliationInterval (%s) must be shorter than namespace %q SyncedResourceRetentionPeriod (%s); otherwise resources will be cleaned before reconciliation can observe them",
 				kind, reconcileInterval, namespace, retention,

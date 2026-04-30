@@ -159,7 +159,7 @@ func (i *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformA
 		mode = modeReconcile
 	}
 
-	informFunc := func(ctx context.Context) (retErr error) {
+	informFunc := func(ctx context.Context) error {
 		timeout := i.informer.InformTimeout(&job.Args)
 		if timeout == 0 {
 			// use the client-level timeout if the resource doesn't specify one
@@ -171,19 +171,6 @@ func (i *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformA
 			ctx, cancel = context.WithTimeout(ctx, timeout)
 			defer cancel()
 		}
-
-		defer func() {
-			labels := map[string]string{"kind": job.Args.ResourceKind}
-			result := ResultSuccess
-			if retErr != nil {
-				result = ResultError
-			}
-			labels["result"] = result
-			client.metrics.Counter(ctx, mode.runsMetric(), 1, labels)
-			client.metrics.Histogram(ctx, mode.durationMetric(), time.Since(informStart).Seconds(), map[string]string{
-				"kind": job.Args.ResourceKind,
-			})
-		}()
 
 		queue, err := i.informer.Inform(ctx, &informOpts)
 		if err != nil {
@@ -224,7 +211,19 @@ func (i *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformA
 		}
 	}
 
-	return informFunc(ctx)
+	informErr := informFunc(ctx)
+	result := ResultSuccess
+	if informErr != nil {
+		result = ResultError
+	}
+	client.metrics.Counter(ctx, mode.runsMetric(), 1, map[string]string{
+		"kind":   job.Args.ResourceKind,
+		"result": result,
+	})
+	client.metrics.Histogram(ctx, mode.durationMetric(), time.Since(informStart).Seconds(), map[string]string{
+		"kind": job.Args.ResourceKind,
+	})
+	return informErr
 }
 
 func (i *controllerInformer[T]) Timeout(job *river.Job[InformArgs[T]]) time.Duration {
