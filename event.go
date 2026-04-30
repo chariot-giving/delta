@@ -14,6 +14,9 @@ type Event struct {
 	EventCategory EventCategory
 	// Timestamp is the time the event occurred.
 	Timestamp time.Time
+	// Drift carries additional context for EventCategoryObjectDriftDetected
+	// events. It is nil for other event categories.
+	Drift *DriftInfo
 }
 
 type EventCategory string
@@ -33,15 +36,54 @@ const (
 
 	// EventCategoryObjectDeleted occurs when a resource is deleted.
 	EventCategoryObjectDeleted EventCategory = "object_deleted"
+
+	// EventCategoryObjectSkipped occurs when the informer observes a
+	// resource whose upstream state matches Delta's stored state and is
+	// already in the synced state, so no work is scheduled. Useful as a
+	// liveness signal that the informer is running.
+	EventCategoryObjectSkipped EventCategory = "object_skipped"
+
+	// EventCategoryObjectDriftDetected occurs during a reconciliation pass
+	// when the upstream state of a resource diverges from Delta's stored
+	// state. The Drift field on the Event carries the reason and hashes.
+	EventCategoryObjectDriftDetected EventCategory = "object_drift_detected"
 )
+
+// DriftReason describes why drift was detected during reconciliation.
+type DriftReason string
+
+const (
+	// DriftReasonHashMismatch indicates that the upstream object's hash
+	// differs from Delta's stored hash for a resource that was previously
+	// in the synced state.
+	DriftReasonHashMismatch DriftReason = "hash_mismatch"
+	// DriftReasonNotInDelta indicates that the upstream object exists but
+	// Delta has no record of it. The reconciliation pass discovered an
+	// object the regular inform path missed.
+	DriftReasonNotInDelta DriftReason = "not_in_delta"
+)
+
+// DriftInfo carries context about a drift event.
+type DriftInfo struct {
+	// Reason describes why drift was detected.
+	Reason DriftReason
+	// PreviousHash is the hash Delta had stored for the resource before
+	// reconciliation observed drift. Empty for DriftReasonNotInDelta.
+	PreviousHash []byte
+	// CurrentHash is the hash Delta computed for the upstream object as
+	// observed by reconciliation.
+	CurrentHash []byte
+}
 
 // All known event categories, used to validate incoming categories. This is purposely not
 // exported because end users should have no way of subscribing to all known
 // categories for forward compatibility reasons.
 var allCategories = map[EventCategory]struct{}{ //nolint:gochecknoglobals
-	EventCategoryObjectSynced:  {},
-	EventCategoryObjectFailed:  {},
-	EventCategoryObjectDeleted: {},
+	EventCategoryObjectSynced:        {},
+	EventCategoryObjectFailed:        {},
+	EventCategoryObjectDeleted:       {},
+	EventCategoryObjectSkipped:       {},
+	EventCategoryObjectDriftDetected: {},
 }
 
 // eventSubscription is an active subscription for events being produced by a

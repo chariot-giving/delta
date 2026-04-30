@@ -31,6 +31,7 @@ type SubscribeConfig struct {
 
 type subscriptionManager struct {
 	logger  *slog.Logger
+	metrics MetricsCollector
 	eventCh <-chan []Event
 
 	mu               sync.Mutex // protects subscription fields
@@ -74,12 +75,12 @@ func (sm *subscriptionManager) Start(ctx context.Context) {
 			// one has to be careful in tests.
 			sm.logger.DebugContext(ctx, "SubscriptionManager: Stopping; distributing subscriptions until channel is closed")
 			for events := range sm.eventCh {
-				sm.distributeEvents(events)
+				sm.distributeEvents(ctx, events)
 			}
 
 			return
 		case events := <-sm.eventCh:
-			sm.distributeEvents(events)
+			sm.distributeEvents(ctx, events)
 		}
 	}
 }
@@ -134,7 +135,7 @@ func (sm *subscriptionManager) SubscribeConfig(config *SubscribeConfig) (<-chan 
 // Receives events from Delta event channel and distributes events into
 // any listening subscriber channels.
 // (Subscriber channels are non-blocking so this should be quite fast.)
-func (sm *subscriptionManager) distributeEvents(events []Event) {
+func (sm *subscriptionManager) distributeEvents(ctx context.Context, events []Event) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -144,22 +145,39 @@ func (sm *subscriptionManager) distributeEvents(events []Event) {
 	}
 
 	for _, event := range events {
-		sm.distributeObjectEvent(event)
+		sm.distributeObjectEvent(ctx, event)
 	}
 }
 
 // Distribute a single event into any listening subscriber channels.
 //
 // MUST be called with sm.mu already held.
-func (sm *subscriptionManager) distributeObjectEvent(event Event) {
-	// All subscription channels are non-blocking so this is always fast and
-	// there's no risk of falling behind what producers are sending.
+func (sm *subscriptionManager) distributeObjectEvent(ctx context.Context, event Event) {
+	// All subscription channels are non-blocking. If a subscriber's channel
+	// is full we record a drop and log so the lossiness is observable
+	// rather than silent.
 	for _, sub := range sm.subscriptions {
-		if sub.ListensFor(event.EventCategory) {
-			select {
-			case sub.Chan <- event:
-			default:
+		if !sub.ListensFor(event.EventCategory) {
+			continue
+		}
+		select {
+		case sub.Chan <- event:
+		default:
+			if sm.metrics != nil {
+				sm.metrics.Counter(ctx, MetricSubscriptionDropped, 1, map[string]string{
+					"category": string(event.EventCategory),
+				})
 			}
+			var kind, objectID string
+			if event.Resource != nil {
+				kind = event.Resource.ObjectKind
+				objectID = event.Resource.ObjectID
+			}
+			sm.logger.WarnContext(ctx, "subscription: dropped event due to full channel",
+				"category", event.EventCategory,
+				"object_kind", kind,
+				"object_id", objectID,
+			)
 		}
 	}
 }

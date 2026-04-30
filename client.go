@@ -31,6 +31,13 @@ type Config struct {
 	// or higher.
 	Logger *slog.Logger
 
+	// Metrics receives observability signals (counters and histograms) from
+	// Delta. If nil, a no-op collector is used. Implementations should
+	// translate calls to whatever observability backend the application
+	// uses (Prometheus, OpenTelemetry, statsd, etc.). See metrics.go for
+	// the stable list of metric names emitted.
+	Metrics MetricsCollector
+
 	// Controllers is a bundle of registered resource controllers.
 	//
 	// This field may be omitted for a program that's only informing resources
@@ -120,6 +127,7 @@ type Client struct {
 	client              *river.Client[pgx.Tx]
 	eventCh             chan []Event
 	subscriptionManager *subscriptionManager
+	metrics             MetricsCollector
 }
 
 var (
@@ -138,6 +146,12 @@ func NewClient(dbPool *pgxpool.Pool, config *Config) (*Client, error) {
 	}
 	config.Logger = logger
 
+	metrics := config.Metrics
+	if metrics == nil {
+		metrics = noopMetrics{}
+	}
+	config.Metrics = metrics
+
 	config.ResourceWorkTimeout = firstNonZero(config.ResourceWorkTimeout, time.Minute*1)
 	config.ControllerInformTimeout = firstNonZero(config.ControllerInformTimeout, time.Minute*1)
 	config.StuckScheduledThreshold = firstNonZero(config.StuckScheduledThreshold, time.Hour*1)
@@ -146,6 +160,7 @@ func NewClient(dbPool *pgxpool.Pool, config *Config) (*Client, error) {
 		config:  config,
 		dbPool:  dbPool,
 		workers: river.NewWorkers(),
+		metrics: metrics,
 	}
 
 	if config.willManageResources() {
@@ -160,6 +175,7 @@ func NewClient(dbPool *pgxpool.Pool, config *Config) (*Client, error) {
 
 		client.subscriptionManager = &subscriptionManager{
 			logger:           config.Logger.WithGroup("subscription_manager"),
+			metrics:          metrics,
 			subscriptions:    make(map[int]*eventSubscription),
 			subscriptionsSeq: 0,
 			mu:               sync.Mutex{},
@@ -193,20 +209,24 @@ func NewClient(dbPool *pgxpool.Pool, config *Config) (*Client, error) {
 		if err := river.AddWorkerSafely(client.workers, &controllerInformerScheduler{pool: client.dbPool}); err != nil {
 			return nil, fmt.Errorf("error adding controller informer scheduler worker: %w", err)
 		}
+		if err := river.AddWorkerSafely(client.workers, &controllerReconcileScheduler{pool: client.dbPool}); err != nil {
+			return nil, fmt.Errorf("error adding controller reconcile scheduler worker: %w", err)
+		}
 		if err := river.AddWorkerSafely(client.workers, &rescheduler{
 			pool:                    client.dbPool,
 			stuckScheduledThreshold: config.StuckScheduledThreshold,
+			metrics:                 metrics,
 		}); err != nil {
 			return nil, fmt.Errorf("error adding rescheduler worker: %w", err)
 		}
 
 		// Add maintenance workers
 		// 1. expirer (expire resources)
-		if err := river.AddWorkerSafely(client.workers, maintenance.NewNamespaceExpirer(client.dbPool)); err != nil {
+		if err := river.AddWorkerSafely(client.workers, maintenance.NewNamespaceExpirer(client.dbPool, metrics)); err != nil {
 			return nil, fmt.Errorf("error adding namespace expirer worker: %w", err)
 		}
 		// 2. cleaner (delete old resources that are degraded)
-		if err := river.AddWorkerSafely(client.workers, maintenance.NewCleaner(client.dbPool)); err != nil {
+		if err := river.AddWorkerSafely(client.workers, maintenance.NewCleaner(client.dbPool, metrics)); err != nil {
 			return nil, fmt.Errorf("error adding cleaner worker: %w", err)
 		}
 
@@ -225,6 +245,15 @@ func NewClient(dbPool *pgxpool.Pool, config *Config) (*Client, error) {
 					river.PeriodicInterval(firstNonZero(client.config.MaintenanceJobInterval, time.Minute*1)),
 					func() (river.JobArgs, *river.InsertOpts) {
 						return InformScheduleArgs{}, nil
+					},
+					&river.PeriodicJobOpts{
+						RunOnStart: true,
+					},
+				),
+				river.NewPeriodicJob(
+					river.PeriodicInterval(firstNonZero(client.config.MaintenanceJobInterval, time.Minute*1)),
+					func() (river.JobArgs, *river.InsertOpts) {
+						return ReconcileScheduleArgs{}, nil
 					},
 					&river.PeriodicJobOpts{
 						RunOnStart: true,
@@ -316,10 +345,27 @@ func (c *Client) Start(ctx context.Context) error {
 
 		informInterval := firstNonZero(objectSettings.InformInterval, c.config.ResourceInformInterval, time.Hour*1)
 
+		// Validate reconciliation interval vs effective synced retention.
+		// Reconciliation runs `Inform` with ProcessExisting=true, so it
+		// needs synced rows to still be in the database when it runs.
+		// If the cleaner or expirer would remove them first, the
+		// reconciliation can never observe their state.
+		if objectSettings.ReconciliationInterval > 0 {
+			if err := c.config.validateReconcileRetention(controller.object.Kind(), objectSettings.ReconciliationInterval); err != nil {
+				return err
+			}
+		}
+
+		var reconcileIntervalArg *time.Duration
+		if objectSettings.ReconciliationInterval != 0 {
+			reconcileIntervalArg = &objectSettings.ReconciliationInterval
+		}
+
 		_, err := queries.ControllerCreateOrSetUpdatedAt(ctx, &sqlc.ControllerCreateOrSetUpdatedAtParams{
-			Name:           controller.object.Kind(),
-			Metadata:       json.RawMessage(`{}`),
-			InformInterval: &informInterval,
+			Name:              controller.object.Kind(),
+			Metadata:          json.RawMessage(`{}`),
+			InformInterval:    &informInterval,
+			ReconcileInterval: reconcileIntervalArg,
 		})
 		if err != nil {
 			return err
@@ -336,6 +382,35 @@ func (c *Client) Start(ctx context.Context) error {
 		return fmt.Errorf("error starting river client: %w", err)
 	}
 
+	return nil
+}
+
+// validateReconcileRetention enforces that reconcileInterval is shorter
+// than the effective synced-resource retention for every namespace whose
+// retention applies to this kind. Namespaces are not bound to a specific
+// kind by config — any namespace can hold any kind — so we conservatively
+// validate against every configured namespace.
+func (c *Config) validateReconcileRetention(kind string, reconcileInterval time.Duration) error {
+	for namespace, ns := range c.Namespaces {
+		// ResourceExpiry: synced rows are flipped to expired and re-worked
+		// after this duration. Reconciliation needs to win the race so it
+		// can observe the synced state before the expirer perturbs it.
+		if ns.ResourceExpiry > 0 && reconcileInterval >= ns.ResourceExpiry {
+			return fmt.Errorf(
+				"controller %q ReconciliationInterval (%s) must be shorter than namespace %q ResourceExpiry (%s); otherwise resources will be expired before reconciliation can observe them",
+				kind, reconcileInterval, namespace, ns.ResourceExpiry,
+			)
+		}
+		// SyncedResourceRetentionPeriod: synced rows are hard-deleted
+		// after this duration. Reconciliation needs them to still exist.
+		retention := firstNonZero(ns.SyncedResourceRetentionPeriod, c.SyncedResourceRetentionPeriod)
+		if retention > 0 && ns.ResourceExpiry == 0 && reconcileInterval >= retention {
+			return fmt.Errorf(
+				"controller %q ReconciliationInterval (%s) must be shorter than namespace %q SyncedResourceRetentionPeriod (%s); otherwise resources will be cleaned before reconciliation can observe them",
+				kind, reconcileInterval, namespace, retention,
+			)
+		}
+	}
 	return nil
 }
 
@@ -549,6 +624,24 @@ func (c *Client) subscribeConfig(config *SubscribeConfig) (<-chan Event, func())
 	}
 
 	return c.subscriptionManager.SubscribeConfig(config)
+}
+
+// emitEvent ships an event onto the client's distribution channel without
+// blocking the caller. If the client hasn't been started yet (eventCh nil)
+// or the buffered channel is full, the event is dropped and a metric
+// increment is recorded so the loss is observable.
+func (c *Client) emitEvent(ctx context.Context, event Event) {
+	if c == nil || c.eventCh == nil {
+		return
+	}
+	select {
+	case c.eventCh <- []Event{event}:
+	default:
+		c.metrics.Counter(ctx, MetricSubscriptionDropped, 1, map[string]string{
+			"category": string(event.EventCategory),
+		})
+		c.config.Logger.WarnContext(ctx, "delta: dropped event before fanout due to full bus", "category", event.EventCategory)
+	}
 }
 
 // Indicates whether with the given configuration, this client will be expected

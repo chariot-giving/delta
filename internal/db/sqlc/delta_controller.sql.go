@@ -16,7 +16,8 @@ INSERT INTO delta_controller(
         metadata,
         name,
         updated_at,
-        inform_interval
+        inform_interval,
+        reconcile_interval
     )
 VALUES (
         now(),
@@ -26,6 +27,10 @@ VALUES (
         coalesce(
             $4::interval,
             '1 hour'::interval
+        ),
+        coalesce(
+            $5::interval,
+            '0'::interval
         )
     ) ON CONFLICT (name) DO
 UPDATE
@@ -33,15 +38,20 @@ SET updated_at = coalesce($3::timestamptz, now()),
     inform_interval = coalesce(
         $4::interval,
         '1 hour'::interval
+    ),
+    reconcile_interval = coalesce(
+        $5::interval,
+        '0'::interval
     )
-RETURNING name, last_inform_time, inform_interval, created_at, updated_at, metadata
+RETURNING name, last_inform_time, inform_interval, created_at, updated_at, metadata, reconcile_interval, last_reconcile_time
 `
 
 type ControllerCreateOrSetUpdatedAtParams struct {
-	Metadata       []byte
-	Name           string
-	UpdatedAt      *time.Time
-	InformInterval *time.Duration
+	Metadata          []byte
+	Name              string
+	UpdatedAt         *time.Time
+	InformInterval    *time.Duration
+	ReconcileInterval *time.Duration
 }
 
 func (q *Queries) ControllerCreateOrSetUpdatedAt(ctx context.Context, arg *ControllerCreateOrSetUpdatedAtParams) (*DeltaController, error) {
@@ -50,6 +60,7 @@ func (q *Queries) ControllerCreateOrSetUpdatedAt(ctx context.Context, arg *Contr
 		arg.Name,
 		arg.UpdatedAt,
 		arg.InformInterval,
+		arg.ReconcileInterval,
 	)
 	var i DeltaController
 	err := row.Scan(
@@ -59,12 +70,14 @@ func (q *Queries) ControllerCreateOrSetUpdatedAt(ctx context.Context, arg *Contr
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Metadata,
+		&i.ReconcileInterval,
+		&i.LastReconcileTime,
 	)
 	return &i, err
 }
 
 const controllerGet = `-- name: ControllerGet :one
-SELECT name, last_inform_time, inform_interval, created_at, updated_at, metadata
+SELECT name, last_inform_time, inform_interval, created_at, updated_at, metadata, reconcile_interval, last_reconcile_time
 FROM delta_controller
 WHERE name = $1
 `
@@ -79,12 +92,14 @@ func (q *Queries) ControllerGet(ctx context.Context, name string) (*DeltaControl
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Metadata,
+		&i.ReconcileInterval,
+		&i.LastReconcileTime,
 	)
 	return &i, err
 }
 
 const controllerListReady = `-- name: ControllerListReady :many
-SELECT name, last_inform_time, inform_interval, created_at, updated_at, metadata
+SELECT name, last_inform_time, inform_interval, created_at, updated_at, metadata, reconcile_interval, last_reconcile_time
 FROM delta_controller
 WHERE inform_interval > '0'
     AND now() - last_inform_time > inform_interval
@@ -107,6 +122,45 @@ func (q *Queries) ControllerListReady(ctx context.Context) ([]*DeltaController, 
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.Metadata,
+			&i.ReconcileInterval,
+			&i.LastReconcileTime,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, &i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const controllerListReadyForReconcile = `-- name: ControllerListReadyForReconcile :many
+SELECT name, last_inform_time, inform_interval, created_at, updated_at, metadata, reconcile_interval, last_reconcile_time
+FROM delta_controller
+WHERE reconcile_interval > '0'
+    AND now() - last_reconcile_time > reconcile_interval
+ORDER BY last_reconcile_time ASC
+`
+
+func (q *Queries) ControllerListReadyForReconcile(ctx context.Context) ([]*DeltaController, error) {
+	rows, err := q.db.Query(ctx, controllerListReadyForReconcile)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []*DeltaController
+	for rows.Next() {
+		var i DeltaController
+		if err := rows.Scan(
+			&i.Name,
+			&i.LastInformTime,
+			&i.InformInterval,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Metadata,
+			&i.ReconcileInterval,
+			&i.LastReconcileTime,
 		); err != nil {
 			return nil, err
 		}
@@ -132,5 +186,22 @@ type ControllerSetLastInformTimeParams struct {
 
 func (q *Queries) ControllerSetLastInformTime(ctx context.Context, arg *ControllerSetLastInformTimeParams) error {
 	_, err := q.db.Exec(ctx, controllerSetLastInformTime, arg.LastInformTime, arg.Name)
+	return err
+}
+
+const controllerSetLastReconcileTime = `-- name: ControllerSetLastReconcileTime :exec
+UPDATE delta_controller
+SET last_reconcile_time = $1,
+    updated_at = now()
+WHERE name = $2
+`
+
+type ControllerSetLastReconcileTimeParams struct {
+	LastReconcileTime time.Time
+	Name              string
+}
+
+func (q *Queries) ControllerSetLastReconcileTime(ctx context.Context, arg *ControllerSetLastReconcileTimeParams) error {
+	_, err := q.db.Exec(ctx, controllerSetLastReconcileTime, arg.LastReconcileTime, arg.Name)
 	return err
 }

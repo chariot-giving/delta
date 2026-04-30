@@ -58,6 +58,19 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 	}
 
 	resource := job.Args
+	resourceKind := resource.Object.Kind()
+	workStart := time.Now()
+
+	// recordWorkOutcome captures the metric and (when applicable) duration
+	// once we know the terminal state for this attempt.
+	recordWorkOutcome := func(state sqlc.DeltaResourceState) {
+		labels := map[string]string{
+			"kind":  resourceKind,
+			"state": string(state),
+		}
+		client.metrics.Counter(ctx, MetricWorkRuns, 1, labels)
+		client.metrics.Histogram(ctx, MetricWorkDuration, time.Since(workStart).Seconds(), labels)
+	}
 
 	// use a db transaction to ensure we have a consistent view of the resource
 	// this is potentially a long-running transaction but we limit it via context timeout
@@ -152,6 +165,7 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 			}
 
 			deletedRow := toResourceRow(deleted)
+			recordWorkOutcome(sqlc.DeltaResourceStateDeleted)
 			client.eventCh <- []Event{
 				{
 					Resource:      &deletedRow,
@@ -198,6 +212,7 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 		}
 
 		failedRow := toResourceRow(failed)
+		recordWorkOutcome(state)
 		client.eventCh <- []Event{
 			{
 				Resource:      &failedRow,
@@ -226,6 +241,7 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 	}
 
 	syncedRow := toResourceRow(synced)
+	recordWorkOutcome(sqlc.DeltaResourceStateSynced)
 	client.eventCh <- []Event{
 		{
 			Resource:      &syncedRow,
