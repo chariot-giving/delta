@@ -58,6 +58,19 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 	}
 
 	resource := job.Args
+	resourceKind := resource.Object.Kind()
+	workStart := time.Now()
+
+	// recordWorkOutcome captures the metric and (when applicable) duration
+	// once we know the terminal state for this attempt.
+	recordWorkOutcome := func(state sqlc.DeltaResourceState) {
+		labels := map[string]string{
+			"kind":  resourceKind,
+			"state": string(state),
+		}
+		client.metrics.Counter(ctx, MetricWorkRuns, 1, labels)
+		client.metrics.Histogram(ctx, MetricWorkDuration, time.Since(workStart).Seconds(), labels)
+	}
 
 	// use a db transaction to ensure we have a consistent view of the resource
 	// this is potentially a long-running transaction but we limit it via context timeout
@@ -152,13 +165,12 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 			}
 
 			deletedRow := toResourceRow(deleted)
-			client.eventCh <- []Event{
-				{
-					Resource:      &deletedRow,
-					EventCategory: EventCategoryObjectDeleted,
-					Timestamp:     time.Now(),
-				},
-			}
+			recordWorkOutcome(sqlc.DeltaResourceStateDeleted)
+			client.emitEvent(ctx, Event{
+				Resource:      &deletedRow,
+				EventCategory: EventCategoryObjectDeleted,
+				Timestamp:     time.Now(),
+			})
 
 			return river.JobCancel(fmt.Errorf("resource deleted: %w", wErr))
 		}
@@ -198,13 +210,12 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 		}
 
 		failedRow := toResourceRow(failed)
-		client.eventCh <- []Event{
-			{
-				Resource:      &failedRow,
-				EventCategory: EventCategoryObjectFailed,
-				Timestamp:     time.Now(),
-			},
-		}
+		recordWorkOutcome(state)
+		client.emitEvent(ctx, Event{
+			Resource:      &failedRow,
+			EventCategory: EventCategoryObjectFailed,
+			Timestamp:     time.Now(),
+		})
 
 		return wErr
 	}
@@ -226,13 +237,12 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 	}
 
 	syncedRow := toResourceRow(synced)
-	client.eventCh <- []Event{
-		{
-			Resource:      &syncedRow,
-			EventCategory: EventCategoryObjectSynced,
-			Timestamp:     time.Now(),
-		},
-	}
+	recordWorkOutcome(sqlc.DeltaResourceStateSynced)
+	client.emitEvent(ctx, Event{
+		Resource:      &syncedRow,
+		EventCategory: EventCategoryObjectSynced,
+		Timestamp:     time.Now(),
+	})
 
 	logger.InfoContext(ctx, "finished working resource", "id", resource.ID, "resource_id", resource.Object.ID(), "resource_kind", resource.Object.Kind())
 

@@ -31,6 +31,13 @@ type Config struct {
 	// or higher.
 	Logger *slog.Logger
 
+	// Metrics receives observability signals (counters and histograms) from
+	// Delta. If nil, a no-op collector is used. Implementations should
+	// translate calls to whatever observability backend the application
+	// uses (Prometheus, OpenTelemetry, statsd, etc.). See metrics.go for
+	// the stable list of metric names emitted.
+	Metrics MetricsCollector
+
 	// Controllers is a bundle of registered resource controllers.
 	//
 	// This field may be omitted for a program that's only informing resources
@@ -120,11 +127,10 @@ type Client struct {
 	client              *river.Client[pgx.Tx]
 	eventCh             chan []Event
 	subscriptionManager *subscriptionManager
+	metrics             MetricsCollector
 }
 
-var (
-	errMissingConfig = errors.New("missing config")
-)
+var errMissingConfig = errors.New("missing config")
 
 func NewClient(dbPool *pgxpool.Pool, config *Config) (*Client, error) {
 	if config == nil {
@@ -138,6 +144,12 @@ func NewClient(dbPool *pgxpool.Pool, config *Config) (*Client, error) {
 	}
 	config.Logger = logger
 
+	metrics := config.Metrics
+	if metrics == nil {
+		metrics = noopMetrics{}
+	}
+	config.Metrics = metrics
+
 	config.ResourceWorkTimeout = firstNonZero(config.ResourceWorkTimeout, time.Minute*1)
 	config.ControllerInformTimeout = firstNonZero(config.ControllerInformTimeout, time.Minute*1)
 	config.StuckScheduledThreshold = firstNonZero(config.StuckScheduledThreshold, time.Hour*1)
@@ -146,6 +158,7 @@ func NewClient(dbPool *pgxpool.Pool, config *Config) (*Client, error) {
 		config:  config,
 		dbPool:  dbPool,
 		workers: river.NewWorkers(),
+		metrics: metrics,
 	}
 
 	if config.willManageResources() {
@@ -160,6 +173,7 @@ func NewClient(dbPool *pgxpool.Pool, config *Config) (*Client, error) {
 
 		client.subscriptionManager = &subscriptionManager{
 			logger:           config.Logger.WithGroup("subscription_manager"),
+			metrics:          metrics,
 			subscriptions:    make(map[int]*eventSubscription),
 			subscriptionsSeq: 0,
 			mu:               sync.Mutex{},
@@ -196,17 +210,18 @@ func NewClient(dbPool *pgxpool.Pool, config *Config) (*Client, error) {
 		if err := river.AddWorkerSafely(client.workers, &rescheduler{
 			pool:                    client.dbPool,
 			stuckScheduledThreshold: config.StuckScheduledThreshold,
+			metrics:                 metrics,
 		}); err != nil {
 			return nil, fmt.Errorf("error adding rescheduler worker: %w", err)
 		}
 
 		// Add maintenance workers
 		// 1. expirer (expire resources)
-		if err := river.AddWorkerSafely(client.workers, maintenance.NewNamespaceExpirer(client.dbPool)); err != nil {
+		if err := river.AddWorkerSafely(client.workers, maintenance.NewNamespaceExpirer(client.dbPool, metrics)); err != nil {
 			return nil, fmt.Errorf("error adding namespace expirer worker: %w", err)
 		}
 		// 2. cleaner (delete old resources that are degraded)
-		if err := river.AddWorkerSafely(client.workers, maintenance.NewCleaner(client.dbPool)); err != nil {
+		if err := river.AddWorkerSafely(client.workers, maintenance.NewCleaner(client.dbPool, metrics)); err != nil {
 			return nil, fmt.Errorf("error adding cleaner worker: %w", err)
 		}
 
@@ -549,6 +564,29 @@ func (c *Client) subscribeConfig(config *SubscribeConfig) (<-chan Event, func())
 	}
 
 	return c.subscriptionManager.SubscribeConfig(config)
+}
+
+// emitEvent ships an event onto the client's distribution channel without
+// blocking the caller. If the buffered bus channel is full the event is
+// dropped, a MetricSubscriptionDropped counter with source="bus" is
+// incremented, and a warning is logged so the loss is observable.
+//
+// Calls before Start() (i.e. before c.eventCh is allocated) are no-ops:
+// no subscriber can have been registered yet, so there is nothing to
+// observe.
+func (c *Client) emitEvent(ctx context.Context, event Event) {
+	if c == nil || c.eventCh == nil {
+		return
+	}
+	select {
+	case c.eventCh <- []Event{event}:
+	default:
+		c.metrics.Counter(ctx, MetricSubscriptionDropped, 1, map[string]string{
+			"category": string(event.EventCategory),
+			"source":   DropSourceBus,
+		})
+		c.config.Logger.WarnContext(ctx, "delta: dropped event before fanout due to full bus", "category", event.EventCategory)
+	}
 }
 
 // Indicates whether with the given configuration, this client will be expected

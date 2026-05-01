@@ -33,6 +33,12 @@ const (
 
 	// EventCategoryObjectDeleted occurs when a resource is deleted.
 	EventCategoryObjectDeleted EventCategory = "object_deleted"
+
+	// EventCategoryObjectSkipped occurs when the informer observes a
+	// resource whose upstream state matches Delta's stored state and is
+	// already in the synced state, so no work is scheduled. Useful as a
+	// liveness signal that the informer is running.
+	EventCategoryObjectSkipped EventCategory = "object_skipped"
 )
 
 // All known event categories, used to validate incoming categories. This is purposely not
@@ -42,6 +48,7 @@ var allCategories = map[EventCategory]struct{}{ //nolint:gochecknoglobals
 	EventCategoryObjectSynced:  {},
 	EventCategoryObjectFailed:  {},
 	EventCategoryObjectDeleted: {},
+	EventCategoryObjectSkipped: {},
 }
 
 // eventSubscription is an active subscription for events being produced by a

@@ -6,6 +6,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
+	"github.com/chariot-giving/delta/deltatype"
 	"github.com/chariot-giving/delta/internal/db/sqlc"
 	"github.com/chariot-giving/delta/internal/middleware"
 )
@@ -24,12 +25,16 @@ func (e ExpireResourceArgs) InsertOpts() river.InsertOpts {
 }
 
 type namespaceExpirer struct {
-	pool *pgxpool.Pool
+	pool    *pgxpool.Pool
+	metrics deltatype.MetricsCollector
 	river.WorkerDefaults[ExpireResourceArgs]
 }
 
-func NewNamespaceExpirer(pool *pgxpool.Pool) *namespaceExpirer {
-	return &namespaceExpirer{pool: pool}
+func NewNamespaceExpirer(pool *pgxpool.Pool, metrics deltatype.MetricsCollector) *namespaceExpirer {
+	if metrics == nil {
+		metrics = deltatype.NoopMetrics{}
+	}
+	return &namespaceExpirer{pool: pool, metrics: metrics}
 }
 
 func (e *namespaceExpirer) Work(ctx context.Context, job *river.Job[ExpireResourceArgs]) error {
@@ -60,6 +65,11 @@ func (e *namespaceExpirer) Work(ctx context.Context, job *river.Job[ExpireResour
 			return err
 		}
 
+		if numExpired > 0 {
+			e.metrics.Counter(ctx, deltatype.MetricMaintenanceExpired, float64(numExpired), map[string]string{
+				"namespace": namespace.Name,
+			})
+		}
 		logger.InfoContext(ctx, "expired resources for namespace", "namespace", namespace.Name, "num_expired", numExpired)
 	}
 

@@ -31,6 +31,7 @@ type SubscribeConfig struct {
 
 type subscriptionManager struct {
 	logger  *slog.Logger
+	metrics MetricsCollector
 	eventCh <-chan []Event
 
 	mu               sync.Mutex // protects subscription fields
@@ -74,12 +75,12 @@ func (sm *subscriptionManager) Start(ctx context.Context) {
 			// one has to be careful in tests.
 			sm.logger.DebugContext(ctx, "SubscriptionManager: Stopping; distributing subscriptions until channel is closed")
 			for events := range sm.eventCh {
-				sm.distributeEvents(events)
+				sm.distributeEvents(ctx, events)
 			}
 
 			return
 		case events := <-sm.eventCh:
-			sm.distributeEvents(events)
+			sm.distributeEvents(ctx, events)
 		}
 	}
 }
@@ -131,37 +132,69 @@ func (sm *subscriptionManager) SubscribeConfig(config *SubscribeConfig) (<-chan 
 	return subChan, cancel
 }
 
+// droppedSubscriberEvent records the metadata needed to emit a drop
+// metric/log without holding the subscription mutex.
+type droppedSubscriberEvent struct {
+	category EventCategory
+	kind     string
+	objectID string
+}
+
 // Receives events from Delta event channel and distributes events into
 // any listening subscriber channels.
-// (Subscriber channels are non-blocking so this should be quite fast.)
-func (sm *subscriptionManager) distributeEvents(events []Event) {
+//
+// Subscriber channels are non-blocking, so the fanout itself is fast. Drop
+// bookkeeping (metrics + warn log) is intentionally deferred until after
+// sm.mu is released, since MetricsCollector and slog handlers are
+// user-supplied and could do I/O or take locks.
+func (sm *subscriptionManager) distributeEvents(ctx context.Context, events []Event) {
+	drops := sm.fanout(events)
+	for _, drop := range drops {
+		if sm.metrics != nil {
+			sm.metrics.Counter(ctx, MetricSubscriptionDropped, 1, map[string]string{
+				"category": string(drop.category),
+				"source":   DropSourceSubscriber,
+			})
+		}
+		sm.logger.WarnContext(ctx, "subscription: dropped event due to full channel",
+			"category", drop.category,
+			"object_kind", drop.kind,
+			"object_id", drop.objectID,
+		)
+	}
+}
+
+// fanout pushes each event onto every matching subscriber channel
+// non-blockingly and returns the subset that could not be delivered. The
+// subscription mutex is held only for the duration of the fanout.
+func (sm *subscriptionManager) fanout(events []Event) []droppedSubscriberEvent {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
 	// Quick path so we don't need to allocate anything if no one is listening.
 	if len(sm.subscriptions) < 1 {
-		return
+		return nil
 	}
 
+	var drops []droppedSubscriberEvent
 	for _, event := range events {
-		sm.distributeObjectEvent(event)
-	}
-}
-
-// Distribute a single event into any listening subscriber channels.
-//
-// MUST be called with sm.mu already held.
-func (sm *subscriptionManager) distributeObjectEvent(event Event) {
-	// All subscription channels are non-blocking so this is always fast and
-	// there's no risk of falling behind what producers are sending.
-	for _, sub := range sm.subscriptions {
-		if sub.ListensFor(event.EventCategory) {
+		for _, sub := range sm.subscriptions {
+			if !sub.ListensFor(event.EventCategory) {
+				continue
+			}
 			select {
 			case sub.Chan <- event:
 			default:
+				drop := droppedSubscriberEvent{category: event.EventCategory}
+				if event.Resource != nil {
+					drop.kind = event.Resource.ObjectKind
+					drop.objectID = event.Resource.ObjectID
+				}
+				drops = append(drops, drop)
 			}
 		}
 	}
+	return drops
 }
 
 // KeyBy converts a slice into a map using the key/value tuples returned by

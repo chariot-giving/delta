@@ -31,6 +31,7 @@ func (r RescheduleResourceArgs) InsertOpts() river.InsertOpts {
 type rescheduler struct {
 	pool                    *pgxpool.Pool
 	stuckScheduledThreshold time.Duration
+	metrics                 MetricsCollector
 	river.WorkerDefaults[RescheduleResourceArgs]
 }
 
@@ -118,6 +119,19 @@ func (r *rescheduler) Work(ctx context.Context, job *river.Job[RescheduleResourc
 
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("error committing transaction: %w", err)
+	}
+
+	if r.metrics != nil {
+		if len(expired) > 0 {
+			r.metrics.Counter(ctx, MetricMaintenanceRescued, float64(len(expired)), map[string]string{
+				"type": RescueTypeExpired,
+			})
+		}
+		if len(rescued) > 0 {
+			r.metrics.Counter(ctx, MetricMaintenanceRescued, float64(len(rescued)), map[string]string{
+				"type": RescueTypeStuck,
+			})
+		}
 	}
 
 	return nil
