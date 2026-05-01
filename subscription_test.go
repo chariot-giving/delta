@@ -88,15 +88,15 @@ func TestSubscribeConfig_RejectsUnknownCategory(t *testing.T) {
 	)
 }
 
-func TestSubscribe_NewCategoriesAreAccepted(t *testing.T) {
+func TestSubscribe_SkippedCategoryIsAccepted(t *testing.T) {
 	t.Parallel()
 
 	manager := newTestSubscriptionManager(noopMetrics{})
 
-	// Both new categories must be accepted by the registry — otherwise
-	// callers can't subscribe to them.
-	for _, cat := range []EventCategory{EventCategoryObjectSkipped, EventCategoryObjectDriftDetected} {
-		_, cancel := manager.SubscribeConfig(&SubscribeConfig{Categories: []EventCategory{cat}})
-		cancel()
-	}
+	// EventCategoryObjectSkipped is new in this change — the registry must
+	// accept it, otherwise callers can't subscribe to it.
+	_, cancel := manager.SubscribeConfig(&SubscribeConfig{
+		Categories: []EventCategory{EventCategoryObjectSkipped},
+	})
+	cancel()
 }

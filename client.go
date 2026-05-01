@@ -207,9 +207,6 @@ func NewClient(dbPool *pgxpool.Pool, config *Config) (*Client, error) {
 		if err := river.AddWorkerSafely(client.workers, &controllerInformerScheduler{pool: client.dbPool}); err != nil {
 			return nil, fmt.Errorf("error adding controller informer scheduler worker: %w", err)
 		}
-		if err := river.AddWorkerSafely(client.workers, &controllerReconcileScheduler{pool: client.dbPool}); err != nil {
-			return nil, fmt.Errorf("error adding controller reconcile scheduler worker: %w", err)
-		}
 		if err := river.AddWorkerSafely(client.workers, &rescheduler{
 			pool:                    client.dbPool,
 			stuckScheduledThreshold: config.StuckScheduledThreshold,
@@ -243,15 +240,6 @@ func NewClient(dbPool *pgxpool.Pool, config *Config) (*Client, error) {
 					river.PeriodicInterval(firstNonZero(client.config.MaintenanceJobInterval, time.Minute*1)),
 					func() (river.JobArgs, *river.InsertOpts) {
 						return InformScheduleArgs{}, nil
-					},
-					&river.PeriodicJobOpts{
-						RunOnStart: true,
-					},
-				),
-				river.NewPeriodicJob(
-					river.PeriodicInterval(firstNonZero(client.config.MaintenanceJobInterval, time.Minute*1)),
-					func() (river.JobArgs, *river.InsertOpts) {
-						return ReconcileScheduleArgs{}, nil
 					},
 					&river.PeriodicJobOpts{
 						RunOnStart: true,
@@ -343,27 +331,10 @@ func (c *Client) Start(ctx context.Context) error {
 
 		informInterval := firstNonZero(objectSettings.InformInterval, c.config.ResourceInformInterval, time.Hour*1)
 
-		// Validate reconciliation interval vs effective synced retention.
-		// Reconciliation runs `Inform` with ProcessExisting=true, so it
-		// needs synced rows to still be in the database when it runs.
-		// If the cleaner or expirer would remove them first, the
-		// reconciliation can never observe their state.
-		if objectSettings.ReconciliationInterval > 0 {
-			if err := c.config.validateReconcileRetention(controller.object.Kind(), objectSettings.ReconciliationInterval); err != nil {
-				return err
-			}
-		}
-
-		var reconcileIntervalArg *time.Duration
-		if objectSettings.ReconciliationInterval != 0 {
-			reconcileIntervalArg = &objectSettings.ReconciliationInterval
-		}
-
 		_, err := queries.ControllerCreateOrSetUpdatedAt(ctx, &sqlc.ControllerCreateOrSetUpdatedAtParams{
-			Name:              controller.object.Kind(),
-			Metadata:          json.RawMessage(`{}`),
-			InformInterval:    &informInterval,
-			ReconcileInterval: reconcileIntervalArg,
+			Name:           controller.object.Kind(),
+			Metadata:       json.RawMessage(`{}`),
+			InformInterval: &informInterval,
 		})
 		if err != nil {
 			return err
@@ -380,35 +351,6 @@ func (c *Client) Start(ctx context.Context) error {
 		return fmt.Errorf("error starting river client: %w", err)
 	}
 
-	return nil
-}
-
-// validateReconcileRetention enforces that reconcileInterval is shorter
-// than the effective synced-resource retention for every namespace whose
-// retention applies to this kind. Namespaces are not bound to a specific
-// kind by config — any namespace can hold any kind — so we conservatively
-// validate against every configured namespace.
-func (c *Config) validateReconcileRetention(kind string, reconcileInterval time.Duration) error {
-	for namespace, nsConfig := range c.Namespaces {
-		// ResourceExpiry: synced rows are flipped to expired and re-worked
-		// after this duration. Reconciliation needs to win the race so it
-		// can observe the synced state before the expirer perturbs it.
-		if nsConfig.ResourceExpiry > 0 && reconcileInterval >= nsConfig.ResourceExpiry {
-			return fmt.Errorf(
-				"controller %q ReconciliationInterval (%s) must be shorter than namespace %q ResourceExpiry (%s); otherwise resources will be expired before reconciliation can observe them",
-				kind, reconcileInterval, namespace, nsConfig.ResourceExpiry,
-			)
-		}
-		// SyncedResourceRetentionPeriod: synced rows are hard-deleted
-		// after this duration. Reconciliation needs them to still exist.
-		retention := firstNonZero(nsConfig.SyncedResourceRetentionPeriod, c.SyncedResourceRetentionPeriod)
-		if retention > 0 && nsConfig.ResourceExpiry == 0 && reconcileInterval >= retention {
-			return fmt.Errorf(
-				"controller %q ReconciliationInterval (%s) must be shorter than namespace %q SyncedResourceRetentionPeriod (%s); otherwise resources will be cleaned before reconciliation can observe them",
-				kind, reconcileInterval, namespace, retention,
-			)
-		}
-	}
 	return nil
 }
 

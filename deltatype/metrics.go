@@ -24,21 +24,13 @@ const (
 	// MetricInformDuration records inform job duration in seconds.
 	MetricInformDuration = "delta.inform.duration"
 	// MetricInformObjects counts objects processed by the informer.
-	// Labels: kind, result=created|updated|skipped|drift|deleted.
+	// Labels: kind, result=created|updated|skipped|deleted.
 	MetricInformObjects = "delta.inform.objects"
 
 	// MetricWorkRuns counts Work() invocations. Labels: kind, state=synced|failed|degraded|deleted.
 	MetricWorkRuns = "delta.work.runs"
 	// MetricWorkDuration records Work() duration in seconds. Labels: kind, state.
 	MetricWorkDuration = "delta.work.duration"
-
-	// MetricReconcileRuns counts reconciliation job invocations. Labels: kind, result=success|error.
-	MetricReconcileRuns = "delta.reconcile.runs"
-	// MetricReconcileDuration records reconciliation job duration in seconds. Labels: kind.
-	MetricReconcileDuration = "delta.reconcile.duration"
-	// MetricReconcileDrift counts drift events detected during reconciliation.
-	// Labels: kind, reason=hash_mismatch|not_in_delta.
-	MetricReconcileDrift = "delta.reconcile.drift"
 
 	// MetricMaintenanceCleaned counts resources hard-deleted by the cleaner.
 	// Labels: namespace.
@@ -60,7 +52,6 @@ const (
 	ObjectResultCreated = "created"
 	ObjectResultUpdated = "updated"
 	ObjectResultSkipped = "skipped"
-	ObjectResultDrift   = "drift"
 	ObjectResultDeleted = "deleted"
 
 	ResultSuccess = "success"

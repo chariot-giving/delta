@@ -75,13 +75,6 @@ type InformArgs[T Object] struct {
 	// The informer checks existence based on object.Compare() or hash comparison
 	// Defaults to false (skip existing)
 	ProcessExisting bool
-	// Reconcile indicates this inform run is a reconciliation pass: when set,
-	// the informer emits EventCategoryObjectDriftDetected events when the
-	// upstream state of a previously-synced resource diverges from Delta's
-	// stored state, or when a resource observed upstream is missing from
-	// Delta entirely. Reconciliation passes are typically scheduled via
-	// ReconciliationInterval on ObjectSettings.
-	Reconcile bool
 	// RunForeground is used to determine if the informer should run the work in the foreground or background
 	// Defaults to false (background)
 	// TODO: implement this
@@ -132,16 +125,7 @@ func (i *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformA
 		return fmt.Errorf("failed to get controller inform record: %w", err)
 	}
 
-	// Reconcile passes deliberately ignore the After filter: they want the
-	// full upstream snapshot so they can verify every record Delta has,
-	// not just deltas since the last incremental inform.
-	var after *time.Time
-	if !job.Args.Reconcile {
-		after = firstNonZero(job.Args.Options.After, &controller.LastInformTime)
-	} else if job.Args.Options.After != nil {
-		// honor an explicit After if the caller provided one
-		after = job.Args.Options.After
-	}
+	after := firstNonZero(job.Args.Options.After, &controller.LastInformTime)
 	metadata := make(map[string]string)
 	if len(job.Args.Options.Labels) > 0 {
 		metadata = job.Args.Options.Labels
@@ -154,10 +138,6 @@ func (i *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformA
 	}
 
 	informStart := time.Now()
-	mode := modeInform
-	if job.Args.Reconcile {
-		mode = modeReconcile
-	}
 
 	informFunc := func(ctx context.Context) error {
 		timeout := i.informer.InformTimeout(&job.Args)
@@ -216,11 +196,11 @@ func (i *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformA
 	if informErr != nil {
 		result = ResultError
 	}
-	client.metrics.Counter(ctx, mode.runsMetric(), 1, map[string]string{
+	client.metrics.Counter(ctx, MetricInformRuns, 1, map[string]string{
 		"kind":   job.Args.ResourceKind,
 		"result": result,
 	})
-	client.metrics.Histogram(ctx, mode.durationMetric(), time.Since(informStart).Seconds(), map[string]string{
+	client.metrics.Histogram(ctx, MetricInformDuration, time.Since(informStart).Seconds(), map[string]string{
 		"kind": job.Args.ResourceKind,
 	})
 	return informErr
@@ -229,28 +209,6 @@ func (i *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformA
 func (i *controllerInformer[T]) Timeout(job *river.Job[InformArgs[T]]) time.Duration {
 	// we enforce our own timeout so we want to remove River's underlying timeout on the job
 	return -1
-}
-
-// informMode distinguishes regular inform from reconciliation for metrics.
-type informMode int
-
-const (
-	modeInform informMode = iota
-	modeReconcile
-)
-
-func (m informMode) runsMetric() string {
-	if m == modeReconcile {
-		return MetricReconcileRuns
-	}
-	return MetricInformRuns
-}
-
-func (m informMode) durationMetric() string {
-	if m == modeReconcile {
-		return MetricReconcileDuration
-	}
-	return MetricInformDuration
 }
 
 func (i *controllerInformer[T]) processObject(ctx context.Context, object T, args *InformArgs[T]) error {
@@ -357,24 +315,6 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 				"kind":   object.Kind(),
 				"result": ObjectResultCreated,
 			})
-			// In a reconcile pass, an upstream object that has no Delta
-			// record is drift: the regular inform path missed it.
-			if args.Reconcile {
-				client.metrics.Counter(ctx, MetricReconcileDrift, 1, map[string]string{
-					"kind":   object.Kind(),
-					"reason": string(DriftReasonNotInDelta),
-				})
-				client.emitEvent(ctx, Event{
-					Resource:      &resourceRow,
-					EventCategory: EventCategoryObjectDriftDetected,
-					Timestamp:     time.Now(),
-					Drift: &DriftInfo{
-						Reason:       DriftReasonNotInDelta,
-						PreviousHash: nil,
-						CurrentHash:  hash[:],
-					},
-				})
-			}
 
 			return nil
 		}
@@ -445,39 +385,10 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	// Drift detection for reconciliation: emit a drift event whenever a
-	// reconcile pass observes that a previously-synced resource's upstream
-	// hash has changed. We don't emit drift for resources that were already
-	// in a non-synced state — those are normal in-flight churn, not drift.
-	wasSynced := resource.State == sqlc.DeltaResourceStateSynced
-	hashChanged := compare != 0
-	switch {
-	case args.Reconcile && wasSynced && hashChanged:
-		client.metrics.Counter(ctx, MetricReconcileDrift, 1, map[string]string{
-			"kind":   object.Kind(),
-			"reason": string(DriftReasonHashMismatch),
-		})
-		client.emitEvent(ctx, Event{
-			Resource:      &resourceRow,
-			EventCategory: EventCategoryObjectDriftDetected,
-			Timestamp:     time.Now(),
-			Drift: &DriftInfo{
-				Reason:       DriftReasonHashMismatch,
-				PreviousHash: resource.Hash,
-				CurrentHash:  hash[:],
-			},
-		})
-		client.metrics.Counter(ctx, MetricInformObjects, 1, map[string]string{
-			"kind":   object.Kind(),
-			"result": ObjectResultDrift,
-		})
-	default:
-		result := ObjectResultUpdated
-		client.metrics.Counter(ctx, MetricInformObjects, 1, map[string]string{
-			"kind":   object.Kind(),
-			"result": result,
-		})
-	}
+	client.metrics.Counter(ctx, MetricInformObjects, 1, map[string]string{
+		"kind":   object.Kind(),
+		"result": ObjectResultUpdated,
+	})
 
 	return nil
 }

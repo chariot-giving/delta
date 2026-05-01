@@ -79,30 +79,6 @@ type ObjectSettings struct {
 	//
 	// If < 0, the informer is disabled.
 	InformInterval time.Duration
-
-	// ReconciliationInterval is the interval at which a reconciliation pass
-	// should run for this kind of resource. A reconciliation pass runs the
-	// controller's Inform with ProcessExisting=true, which forces re-running
-	// Work() against every observed resource — even those whose upstream
-	// hash has not changed. This is the redundancy mechanism that catches
-	// cases where a resource is in the synced state in Delta but downstream
-	// effects are out of sync (e.g. a Work() function that enqueued
-	// follow-up jobs which failed).
-	//
-	// When the upstream object's hash differs from Delta's stored hash, an
-	// EventCategoryObjectDriftDetected event is also emitted.
-	//
-	// Reconciliation is expensive: every resource of this kind is re-worked
-	// each pass. Set this much larger than InformInterval (hours or days,
-	// not minutes).
-	//
-	// Must be larger than the namespace's effective synced-resource
-	// retention (SyncedResourceRetentionPeriod or ResourceExpiry); otherwise
-	// resources will be cleaned up before reconciliation has a chance to
-	// observe them. The Client validates this at startup.
-	//
-	// If 0 (the default), reconciliation is disabled for this kind.
-	ReconciliationInterval time.Duration
 }
 
 // ComparableObject is an interface that combines Object with a method for comparison.

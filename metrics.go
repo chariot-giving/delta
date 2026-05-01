@@ -21,9 +21,6 @@ const (
 	MetricInformObjects       = deltatype.MetricInformObjects
 	MetricWorkRuns            = deltatype.MetricWorkRuns
 	MetricWorkDuration        = deltatype.MetricWorkDuration
-	MetricReconcileRuns       = deltatype.MetricReconcileRuns
-	MetricReconcileDuration   = deltatype.MetricReconcileDuration
-	MetricReconcileDrift      = deltatype.MetricReconcileDrift
 	MetricMaintenanceCleaned  = deltatype.MetricMaintenanceCleaned
 	MetricMaintenanceExpired  = deltatype.MetricMaintenanceExpired
 	MetricMaintenanceRescued  = deltatype.MetricMaintenanceRescued
@@ -35,7 +32,6 @@ const (
 	ObjectResultCreated = deltatype.ObjectResultCreated
 	ObjectResultUpdated = deltatype.ObjectResultUpdated
 	ObjectResultSkipped = deltatype.ObjectResultSkipped
-	ObjectResultDrift   = deltatype.ObjectResultDrift
 	ObjectResultDeleted = deltatype.ObjectResultDeleted
 
 	ResultSuccess = deltatype.ResultSuccess
