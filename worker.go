@@ -166,13 +166,11 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 
 			deletedRow := toResourceRow(deleted)
 			recordWorkOutcome(sqlc.DeltaResourceStateDeleted)
-			client.eventCh <- []Event{
-				{
-					Resource:      &deletedRow,
-					EventCategory: EventCategoryObjectDeleted,
-					Timestamp:     time.Now(),
-				},
-			}
+			client.emitEvent(ctx, Event{
+				Resource:      &deletedRow,
+				EventCategory: EventCategoryObjectDeleted,
+				Timestamp:     time.Now(),
+			})
 
 			return river.JobCancel(fmt.Errorf("resource deleted: %w", wErr))
 		}
@@ -213,13 +211,11 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 
 		failedRow := toResourceRow(failed)
 		recordWorkOutcome(state)
-		client.eventCh <- []Event{
-			{
-				Resource:      &failedRow,
-				EventCategory: EventCategoryObjectFailed,
-				Timestamp:     time.Now(),
-			},
-		}
+		client.emitEvent(ctx, Event{
+			Resource:      &failedRow,
+			EventCategory: EventCategoryObjectFailed,
+			Timestamp:     time.Now(),
+		})
 
 		return wErr
 	}
@@ -242,13 +238,11 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 
 	syncedRow := toResourceRow(synced)
 	recordWorkOutcome(sqlc.DeltaResourceStateSynced)
-	client.eventCh <- []Event{
-		{
-			Resource:      &syncedRow,
-			EventCategory: EventCategoryObjectSynced,
-			Timestamp:     time.Now(),
-		},
-	}
+	client.emitEvent(ctx, Event{
+		Resource:      &syncedRow,
+		EventCategory: EventCategoryObjectSynced,
+		Timestamp:     time.Now(),
+	})
 
 	logger.InfoContext(ctx, "finished working resource", "id", resource.ID, "resource_id", resource.Object.ID(), "resource_kind", resource.Object.Kind())
 

@@ -567,9 +567,13 @@ func (c *Client) subscribeConfig(config *SubscribeConfig) (<-chan Event, func())
 }
 
 // emitEvent ships an event onto the client's distribution channel without
-// blocking the caller. If the client hasn't been started yet (eventCh nil)
-// or the buffered channel is full, the event is dropped and a metric
-// increment is recorded so the loss is observable.
+// blocking the caller. If the buffered bus channel is full the event is
+// dropped, a MetricSubscriptionDropped counter with source="bus" is
+// incremented, and a warning is logged so the loss is observable.
+//
+// Calls before Start() (i.e. before c.eventCh is allocated) are no-ops:
+// no subscriber can have been registered yet, so there is nothing to
+// observe.
 func (c *Client) emitEvent(ctx context.Context, event Event) {
 	if c == nil || c.eventCh == nil {
 		return
@@ -579,6 +583,7 @@ func (c *Client) emitEvent(ctx context.Context, event Event) {
 	default:
 		c.metrics.Counter(ctx, MetricSubscriptionDropped, 1, map[string]string{
 			"category": string(event.EventCategory),
+			"source":   DropSourceBus,
 		})
 		c.config.Logger.WarnContext(ctx, "delta: dropped event before fanout due to full bus", "category", event.EventCategory)
 	}

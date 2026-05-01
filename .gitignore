@@ -27,3 +27,6 @@ tmp
 
 # Mac
 .DS_Store
+
+# Local editor / assistant config (not shared)
+.claude/

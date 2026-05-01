@@ -34,23 +34,24 @@ func TestSubscriptionManager_DropsAreCounted(t *testing.T) {
 	})
 	defer cancel()
 
-	manager.mu.Lock()
-	manager.distributeObjectEvent(context.Background(), Event{
-		Resource:      &deltatype.ResourceRow{ObjectKind: "k", ObjectID: "1"},
-		EventCategory: EventCategoryObjectSynced,
-		Timestamp:     time.Now(),
+	manager.distributeEvents(context.Background(), []Event{
+		{
+			Resource:      &deltatype.ResourceRow{ObjectKind: "k", ObjectID: "1"},
+			EventCategory: EventCategoryObjectSynced,
+			Timestamp:     time.Now(),
+		},
+		{
+			Resource:      &deltatype.ResourceRow{ObjectKind: "k", ObjectID: "2"},
+			EventCategory: EventCategoryObjectSynced,
+			Timestamp:     time.Now(),
+		},
 	})
-	manager.distributeObjectEvent(context.Background(), Event{
-		Resource:      &deltatype.ResourceRow{ObjectKind: "k", ObjectID: "2"},
-		EventCategory: EventCategoryObjectSynced,
-		Timestamp:     time.Now(),
-	})
-	manager.mu.Unlock()
 
 	// First event should be sitting in the buffer; second should have been dropped.
 	dropped := rec.countersByName(MetricSubscriptionDropped)
 	require.Len(t, dropped, 1, "expected exactly one dropped-event counter increment")
 	require.Equal(t, string(EventCategoryObjectSynced), dropped[0].labels["category"])
+	require.Equal(t, DropSourceSubscriber, dropped[0].labels["source"])
 
 	// And the buffered event should still be readable.
 	select {

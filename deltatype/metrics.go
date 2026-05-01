@@ -42,8 +42,12 @@ const (
 	// Labels: type=stuck|expired.
 	MetricMaintenanceRescued = "delta.maintenance.rescued"
 
-	// MetricSubscriptionDropped counts events dropped because a subscriber's
-	// channel was full. Label: category.
+	// MetricSubscriptionDropped counts events dropped on the event bus.
+	// Labels:
+	//   - category: the dropped event's category.
+	//   - source:   "bus" for drops on the producer-side client bus
+	//               (slow subscription manager); "subscriber" for drops on
+	//               an individual subscriber's channel (slow consumer).
 	MetricSubscriptionDropped = "delta.subscription.dropped"
 )
 
@@ -59,6 +63,16 @@ const (
 
 	RescueTypeStuck   = "stuck"
 	RescueTypeExpired = "expired"
+
+	// DropSourceBus is the source label value used when an event is
+	// dropped on the producer-side client bus (the subscription manager
+	// fanout has fallen behind, or no subscribers exist and the buffered
+	// bus filled up).
+	DropSourceBus = "bus"
+	// DropSourceSubscriber is the source label value used when an event
+	// is dropped while delivering to a specific subscriber whose channel
+	// is full.
+	DropSourceSubscriber = "subscriber"
 )
 
 // NoopMetrics is a MetricsCollector that drops every signal. It's the

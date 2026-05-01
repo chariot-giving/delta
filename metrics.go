@@ -39,6 +39,9 @@ const (
 
 	RescueTypeStuck   = deltatype.RescueTypeStuck
 	RescueTypeExpired = deltatype.RescueTypeExpired
+
+	DropSourceBus        = deltatype.DropSourceBus
+	DropSourceSubscriber = deltatype.DropSourceSubscriber
 )
 
 // noopMetrics is the default MetricsCollector that drops every signal.
