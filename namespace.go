@@ -55,7 +55,11 @@ type NamespaceConfig struct {
 	DegradedResourceRetentionPeriod time.Duration
 }
 
-var nameRegex = regexp.MustCompile(`^(?:[a-z0-9])+(?:[_|\-]?[a-z0-9]+)*$`)
+// Alphanumeric characters separated by underscores or hyphens.
+// Using a character class with '|' was incorrect and allowed pipe
+// characters. This regex properly restricts input to letters,
+// numbers, underscores and hyphens.
+var nameRegex = regexp.MustCompile(`^[a-z0-9]+(?:[_-][a-z0-9]+)*$`)
 
 func validateNamespace(namespace string) error {
 	if namespace == "" {
