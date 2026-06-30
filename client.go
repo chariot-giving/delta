@@ -62,11 +62,23 @@ type Config struct {
 	// Defaults to 1 minutes.
 	ControllerInformTimeout time.Duration
 
-	// MaintenanceJobInterval is the interval at which the maintenance jobs
-	// will run.
+	// MaintenanceJobInterval is the interval at which the latency-sensitive
+	// periodic jobs run: the controller inform scheduler, the resource
+	// rescheduler (which rescues stuck/expired resources), and the namespace
+	// expirer. This interval bounds how quickly those jobs react, so it is kept
+	// short. The cleaner is intentionally excluded; see ResourceCleanerInterval.
 	//
 	// Defaults to 1 minute.
 	MaintenanceJobInterval time.Duration
+
+	// ResourceCleanerInterval is the interval at which the resource cleaner runs
+	// to hard-delete resources that are past their retention period. Cleaning is
+	// pure garbage collection with no latency requirement, so it runs on its own
+	// (longer) cadence rather than on MaintenanceJobInterval. Running it less
+	// often reduces the steady-state sequential-scan load on delta_resource.
+	//
+	// Defaults to 15 minutes.
+	ResourceCleanerInterval time.Duration
 
 	// ResourceInformerInterval is the interval at which the resource informer
 	// will run. If this is 0, the default inform interval of 1 hour is used.
@@ -75,6 +87,16 @@ type Config struct {
 	//
 	// Defaults to 1 hour.
 	ResourceInformInterval time.Duration
+
+	// ResourceInformJitter is the maximum random delay added to each controller's
+	// scheduled inform job. Without jitter, controllers configured with the same
+	// inform interval that become ready on the same scheduler tick all run their
+	// inform work at the same instant and stay aligned every interval thereafter,
+	// producing periodic load spikes. Spreading the jobs across this window
+	// desyncs them without affecting which objects get informed.
+	//
+	// If this is 0, a default of 1 minute is used. A negative value disables jitter.
+	ResourceInformJitter time.Duration
 
 	// ResourceCleanerTimeout is the timeout of the individual queries within the
 	// resource cleaner.
@@ -122,9 +144,7 @@ type Client struct {
 	subscriptionManager *subscriptionManager
 }
 
-var (
-	errMissingConfig = errors.New("missing config")
-)
+var errMissingConfig = errors.New("missing config")
 
 func NewClient(dbPool *pgxpool.Pool, config *Config) (*Client, error) {
 	if config == nil {
@@ -190,7 +210,10 @@ func NewClient(dbPool *pgxpool.Pool, config *Config) (*Client, error) {
 			}
 		}
 
-		if err := river.AddWorkerSafely(client.workers, &controllerInformerScheduler{pool: client.dbPool}); err != nil {
+		if err := river.AddWorkerSafely(client.workers, &controllerInformerScheduler{
+			pool:         client.dbPool,
+			informJitter: firstNonZero(client.config.ResourceInformJitter, time.Minute),
+		}); err != nil {
 			return nil, fmt.Errorf("error adding controller informer scheduler worker: %w", err)
 		}
 		if err := river.AddWorkerSafely(client.workers, &rescheduler{
@@ -249,7 +272,7 @@ func NewClient(dbPool *pgxpool.Pool, config *Config) (*Client, error) {
 					},
 				),
 				river.NewPeriodicJob(
-					river.PeriodicInterval(firstNonZero(client.config.MaintenanceJobInterval, time.Minute*1)),
+					river.PeriodicInterval(firstNonZero(client.config.ResourceCleanerInterval, time.Minute*15)),
 					func() (river.JobArgs, *river.InsertOpts) {
 						return maintenance.CleanResourceArgs{
 							DeletedResourceRetentionPeriod:  firstNonZero(client.config.DeletedResourceRetentionPeriod, time.Hour*24),

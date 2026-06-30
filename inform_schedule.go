@@ -3,6 +3,8 @@ package delta
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -32,6 +34,13 @@ func (s InformScheduleArgs) InsertOpts() river.InsertOpts {
 // You can think about it as a periodic job delegator/scheduler.
 type controllerInformerScheduler struct {
 	pool *pgxpool.Pool
+	// informJitter is the maximum random delay applied to each controller's
+	// inform job. Controllers with fixed inform intervals that become ready on
+	// the same scheduler tick would otherwise all run their inform work at the
+	// same instant (and stay aligned every interval thereafter), causing
+	// periodic CPU spikes. Spreading the jobs across this window desyncs them.
+	// A value <= 0 disables jitter.
+	informJitter time.Duration
 	river.WorkerDefaults[InformScheduleArgs]
 }
 
@@ -56,15 +65,24 @@ func (w *controllerInformerScheduler) Work(ctx context.Context, job *river.Job[I
 			After: &controller.LastInformTime,
 		}
 
+		insertOpts := river.InsertOpts{
+			Queue: controller.Name, // this ensures the job will be picked up by a client who is configured with this controller
+		}
+		// Stagger the inform job within the jitter window so controllers that
+		// became ready on the same tick don't all run at once. We delay the job
+		// rather than touching last_inform_time, so the inform cursor (and which
+		// objects get informed) is unaffected.
+		if w.informJitter > 0 {
+			insertOpts.ScheduledAt = time.Now().Add(rand.N(w.informJitter))
+		}
+
 		res, err := riverClient.Insert(ctx, InformArgs[kindObject]{
 			ResourceKind:    controller.Name,
 			ProcessExisting: false,
 			RunForeground:   false,
 			Options:         &opts,
 			object:          kindObject{kind: controller.Name},
-		}, &river.InsertOpts{
-			Queue: controller.Name, // this ensures the job will be picked up by a client who is configured with this controller
-		})
+		}, &insertOpts)
 		if err != nil {
 			return fmt.Errorf("failed to insert inform job: %w", err)
 		}
