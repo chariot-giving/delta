@@ -114,16 +114,18 @@ WITH deleted_resources AS (
             FROM delta_resource
             WHERE delta_resource.namespace = $1
                 AND (
-                    state = 'deleted'
-                    AND attempted_at < $2::timestamptz
-                )
-                OR (
-                    state = 'synced'
-                    AND synced_at < $3::timestamptz
-                )
-                OR (
-                    state = 'degraded'
-                    AND attempted_at < $4::timestamptz
+                    (
+                        state = 'deleted'
+                        AND attempted_at < $2::timestamptz
+                    )
+                    OR (
+                        state = 'synced'
+                        AND synced_at < $3::timestamptz
+                    )
+                    OR (
+                        state = 'degraded'
+                        AND attempted_at < $4::timestamptz
+                    )
                 )
             ORDER BY id
             LIMIT $5::bigint

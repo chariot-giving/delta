@@ -94,16 +94,18 @@ WITH deleted_resources AS (
             FROM delta_resource
             WHERE delta_resource.namespace = @namespace
                 AND (
-                    state = 'deleted'
-                    AND attempted_at < @deleted_finalized_at_horizon::timestamptz
-                )
-                OR (
-                    state = 'synced'
-                    AND synced_at < @synced_finalized_at_horizon::timestamptz
-                )
-                OR (
-                    state = 'degraded'
-                    AND attempted_at < @degraded_finalized_at_horizon::timestamptz
+                    (
+                        state = 'deleted'
+                        AND attempted_at < @deleted_finalized_at_horizon::timestamptz
+                    )
+                    OR (
+                        state = 'synced'
+                        AND synced_at < @synced_finalized_at_horizon::timestamptz
+                    )
+                    OR (
+                        state = 'degraded'
+                        AND attempted_at < @degraded_finalized_at_horizon::timestamptz
+                    )
                 )
             ORDER BY id
             LIMIT @max::bigint
