@@ -371,6 +371,13 @@ func (c *Client) Stop(ctx context.Context) error {
 }
 
 // Inform the Delta system of an object.
+//
+// If the object is unchanged from an already synced resource (compared the
+// same way the informer does: ComparableObject.Compare when implemented,
+// otherwise the hash of the object's JSON encoding), Inform is a no-op and
+// returns the existing resource with Skipped set. Changes to metadata or tags
+// alone don't count as a change. Use Invalidate to force a synced resource to
+// be re-worked.
 func (c *Client) Inform(ctx context.Context, object Object, opts *InformOpts) (*deltatype.ObjectInformResult, error) {
 	tx, err := c.dbPool.Begin(ctx)
 	if err != nil {
@@ -446,6 +453,40 @@ func (c *Client) InformTx(ctx context.Context, tx pgx.Tx, object Object, opts *I
 
 	maxAttempts := firstNonZero(opts.MaxAttempts, objectInformOpts.MaxAttempts, int16(10))
 
+	// We need the controller's objectFactory to compare and enqueue the
+	// generic Resource struct. This isn't ideal because it requires that the
+	// process invoking Inform has instantiated the associated controllers for
+	// the resource object kind, so you can't have controller-less clients that
+	// inform resources.
+	controller, ok := c.config.Controllers.controllerMap[object.Kind()]
+	if !ok {
+		return nil, fmt.Errorf("controller for kind %q is not registered", object.Kind())
+	}
+
+	// Re-informing an unchanged, already synced object (e.g. a webhook for an
+	// object the periodic informer already synced) would only re-work it.
+	existing, err := queries.ResourceGetByObjectIDAndKind(ctx, &sqlc.ResourceGetByObjectIDAndKindParams{
+		ObjectID: object.ID(),
+		Kind:     object.Kind(),
+	})
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("failed to get resource: %w", err)
+	}
+	if err == nil && existing.State == sqlc.DeltaResourceStateSynced {
+		existingRow := toResourceRow(existing)
+		compare, err := compareObjectToResource(controller.objectFactory, object, existingRow)
+		if err != nil {
+			return nil, err
+		}
+		if compare == 0 {
+			return &deltatype.ObjectInformResult{
+				Resource:      &existingRow,
+				AlreadyExists: true,
+				Skipped:       true,
+			}, nil
+		}
+	}
+
 	res, err := queries.ResourceCreateOrUpdate(ctx, &sqlc.ResourceCreateOrUpdateParams{
 		ObjectID:          object.ID(),
 		Kind:              object.Kind(),
@@ -460,16 +501,6 @@ func (c *Client) InformTx(ctx context.Context, tx pgx.Tx, object Object, opts *I
 	})
 	if err != nil {
 		return nil, err
-	}
-
-	// We need to Insert the generic Resource struct into the river queue.
-	// In order to do this, we leverage the controller's objectFactory.
-	// This isn't ideal because it requires that the process invoking Inform
-	// has instantiated the associated controllers for the resource object kind.
-	// This means you can't have controller-less clients that can inform resources.
-	controller, ok := c.config.Controllers.controllerMap[object.Kind()]
-	if !ok {
-		return nil, fmt.Errorf("controller for kind %q is not registered", object.Kind())
 	}
 
 	resourceRow := toResourceRow(&res.DeltaResource)
