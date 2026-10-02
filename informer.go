@@ -310,7 +310,7 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 
 	// handle soft-deleted resources
 	if resource.State == sqlc.DeltaResourceStateDeleted {
-		logger.WarnContext(ctx, "skipping soft-deleted resource", "id", resource.ID, "kind", resource.Kind, "object_id", resource.ObjectID)
+		logger.DebugContext(ctx, "skipping soft-deleted resource", "id", resource.ID, "kind", resource.Kind, "object_id", resource.ObjectID)
 		return nil
 	}
 
@@ -321,7 +321,7 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 	}
 	if compare == 0 && resource.State == sqlc.DeltaResourceStateSynced && !args.ProcessExisting {
 		// if the objects are the same, the resource is synced, and we don't want to process existing, skip
-		logger.WarnContext(ctx, "skipping already processed object", "id", resource.ID, "kind", resource.Kind, "object_id", resource.ObjectID)
+		logger.DebugContext(ctx, "skipping already processed object", "id", resource.ID, "kind", resource.Kind, "object_id", resource.ObjectID)
 		return nil
 	}
 

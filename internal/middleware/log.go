@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -27,9 +28,20 @@ func (m *loggingMiddleware) Work(ctx context.Context, job *rivertype.JobRow, doI
 	now := time.Now()
 	logger.InfoContext(ctx, "starting job", "started_at", now.Format(time.RFC3339))
 	err := doInner(newCtx)
-	if err != nil {
+	var (
+		cancelErr *rivertype.JobCancelError
+		snoozeErr *rivertype.JobSnoozeError
+	)
+	switch {
+	case errors.As(err, &cancelErr):
+		// Cancellations are an expected outcome (e.g. the resource was deleted),
+		// not a failure.
+		logger.InfoContext(ctx, "job cancelled", "reason", err, "finished_at", time.Now().Format(time.RFC3339), "duration", time.Since(now).Milliseconds())
+	case errors.As(err, &snoozeErr):
+		logger.InfoContext(ctx, "job snoozed", "reason", err, "finished_at", time.Now().Format(time.RFC3339), "duration", time.Since(now).Milliseconds())
+	case err != nil:
 		logger.ErrorContext(ctx, "job failed", "error", err, "finished_at", time.Now().Format(time.RFC3339), "duration", time.Since(now).Milliseconds())
-	} else {
+	default:
 		logger.InfoContext(ctx, "job completed", "finished_at", time.Now().Format(time.RFC3339), "duration", time.Since(now).Milliseconds())
 	}
 	return err

@@ -238,7 +238,7 @@ func NewClient(dbPool *pgxpool.Pool, config *Config) (*Client, error) {
 			Queues:              queues,
 			Workers:             client.workers,
 			SkipUnknownJobCheck: true,
-			// Logger:  c.config.Logger.With("name", "riverqueue"),
+			Logger:              client.config.Logger.With("name", "riverqueue"),
 			WorkerMiddleware: []rivertype.WorkerMiddleware{
 				middleware.NewLoggingMiddleware(client.config.Logger),
 				&jobContextMiddleware{client: client},
