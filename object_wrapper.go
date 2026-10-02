@@ -79,10 +79,8 @@ func (w *wrapperObject[T]) Enqueue(ctx context.Context, tx pgx.Tx, client *river
 	}
 
 	if tx != nil {
-		if _, err := client.InsertTx(ctx, tx, resource, insertOpts); err != nil {
-			return err
-		}
-		return nil
+		_, err := insertResourceJobTx(ctx, tx, client, resource, insertOpts)
+		return err
 	}
 
 	if _, err := client.Insert(ctx, resource, insertOpts); err != nil {

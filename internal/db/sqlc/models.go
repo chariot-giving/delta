@@ -93,3 +93,11 @@ type DeltaResource struct {
 	Tags              []string
 	Errors            [][]byte
 }
+
+type RiverJob struct {
+	ID    int64
+	State string
+	Queue string
+	Kind  string
+	Args  []byte
+}
