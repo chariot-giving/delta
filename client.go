@@ -288,6 +288,8 @@ func NewClient(dbPool *pgxpool.Pool, config *Config) (*Client, error) {
 			},
 		}
 
+		warnIfPoolTooSmall(config.Logger, dbPool, queues)
+
 		riverClient, err := river.NewClient(riverpgxv5.New(client.dbPool), riverConfig)
 		if err != nil {
 			return nil, fmt.Errorf("error creating river client: %w", err)
@@ -614,4 +616,32 @@ func (c *Client) subscribeConfig(config *SubscribeConfig) (<-chan Event, func())
 // requires a set of configured namespaces.
 func (c *Config) willManageResources() bool {
 	return len(c.Namespaces) > 0
+}
+
+// poolConnsReservedForRiver is a rough number of connections River needs for
+// its own work (fetching jobs, completing them, leader election and
+// maintenance) on top of the connections held by running jobs.
+const poolConnsReservedForRiver = 3
+
+// warnIfPoolTooSmall logs a warning when the pool can't hold a connection for
+// every job that may run at once plus River's own overhead.
+//
+// Resource workers hold a pool connection (inside a transaction) for the whole
+// duration of Work(), and River shares the same pool. If the pool is smaller
+// than the configured parallelism, workers block waiting for connections and
+// River's fetches and completions time out.
+func warnIfPoolTooSmall(logger *slog.Logger, dbPool *pgxpool.Pool, queues map[string]river.QueueConfig) {
+	maxWorkers := 0
+	for _, queue := range queues {
+		maxWorkers += queue.MaxWorkers
+	}
+
+	needed := maxWorkers + poolConnsReservedForRiver
+	if maxConns := int(dbPool.Config().MaxConns); maxConns < needed {
+		logger.Warn("delta: database pool is smaller than the configured worker parallelism; jobs may block waiting for connections and River operations may time out",
+			"pool_max_conns", maxConns,
+			"max_concurrent_jobs", maxWorkers,
+			"recommended_min_conns", needed,
+		)
+	}
 }
