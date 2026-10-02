@@ -206,6 +206,11 @@ and how an application interacts with the Delta system.
 
 To get started with Delta, you can follow the [Getting Started Guide](./docs/getting_started.md).
 
+## Monitoring and Operations
+
+- [Monitoring](./docs/monitoring.md): log lines, metrics (`Config.Metrics`), `Client.Stats`, draft alert rules and a Grafana dashboard.
+- [Operations](./docs/operations.md): pool sizing, River job table bloat, and handling poison resources.
+
 ## Contributing
 
 Please read the [Contributing Guide](./CONTRIBUTING.md) for details on our code of conduct, and the process for submitting pull requests to us.

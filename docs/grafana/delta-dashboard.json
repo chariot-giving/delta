@@ -1,0 +1,730 @@
+{
+  "title": "Delta",
+  "uid": "delta-overview",
+  "tags": [
+    "delta",
+    "river"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "refresh": "1m",
+  "editable": true,
+  "templating": {
+    "list": [
+      {
+        "name": "loki",
+        "type": "datasource",
+        "query": "loki",
+        "current": {
+          "text": "grafanacloud-chariot-logs",
+          "value": "grafanacloud-logs"
+        }
+      },
+      {
+        "name": "prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {
+          "text": "grafanacloud-chariot-prom",
+          "value": "grafanacloud-prom"
+        }
+      },
+      {
+        "name": "service",
+        "type": "custom",
+        "query": "bank,supervisor,iris",
+        "multi": true,
+        "includeAll": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "allValue": "bank|supervisor|iris"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Logs (works today)",
+      "id": 1,
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Resource failures by kind",
+      "description": "Work() errors. state=degraded means Delta gave up on the resource.",
+      "id": 2,
+      "datasource": {
+        "type": "loki",
+        "uid": "${loki}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 1
+      },
+      "targets": [
+        {
+          "expr": "sum by (riverjob_job_kind, riverjob_state) (count_over_time({deployment_environment_name=\"prod\", service_name=~\"$service\"} |= \"resource failed\" | json | message=\"resource failed\" [$__auto]))",
+          "legendFormat": "{{{{riverjob_job_kind}}}} ({{{{riverjob_state}}}})",
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Job errors vs cancellations",
+      "description": "",
+      "id": 3,
+      "datasource": {
+        "type": "loki",
+        "uid": "${loki}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 1
+      },
+      "targets": [
+        {
+          "expr": "sum by (service_name) (count_over_time({deployment_environment_name=\"prod\", service_name=~\"$service\"} |= \"job failed\" | json | message=\"job failed\" | riverjob_job_kind=~\"delta.*\" [$__auto]))",
+          "legendFormat": "failed {{service_name}}",
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki}"
+          }
+        },
+        {
+          "expr": "sum by (service_name) (count_over_time({deployment_environment_name=\"prod\", service_name=~\"$service\"} |~ \"job cancelled|JobCancelError\" | json | riverjob_job_kind=~\"delta.*\" [$__auto]))",
+          "legendFormat": "cancelled {{service_name}}",
+          "refId": "B",
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "River fetch / completer / election timeouts",
+      "description": "Bursts usually mean pool starvation or DB pressure.",
+      "id": 4,
+      "datasource": {
+        "type": "loki",
+        "uid": "${loki}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 9
+      },
+      "targets": [
+        {
+          "expr": "sum by (service_name) (count_over_time({deployment_environment_name=\"prod\", service_name=~\"$service\"} |~ \"Error fetching jobs|BatchCompleter.*timed out|Error attempting to elect\" [$__auto]))",
+          "legendFormat": "{{service_name}}",
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Inform runs by kind",
+      "description": "A kind dropping to zero means its informer stopped.",
+      "id": 5,
+      "datasource": {
+        "type": "loki",
+        "uid": "${loki}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 9
+      },
+      "targets": [
+        {
+          "expr": "sum by (riverjob_job_kind) (count_over_time({deployment_environment_name=\"prod\", service_name=~\"$service\"} |= \"job completed\" |= \"delta.inform.\" | json | message=\"job completed\" [$__auto]))",
+          "legendFormat": "{{riverjob_job_kind}}",
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Delta job duration p95 by kind (ms)",
+      "description": "",
+      "id": 6,
+      "datasource": {
+        "type": "loki",
+        "uid": "${loki}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 17
+      },
+      "targets": [
+        {
+          "expr": "quantile_over_time(0.95, {deployment_environment_name=\"prod\", service_name=~\"$service\"} |= \"job completed\" |= \"delta.\" | json | message=\"job completed\" | unwrap riverjob_duration [$__auto]) by (riverjob_job_kind)",
+          "legendFormat": "{{riverjob_job_kind}}",
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "Metrics (needs Config.Metrics + Stats collector)",
+      "id": 7,
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Work runs by state",
+      "description": "",
+      "id": 8,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 26
+      },
+      "targets": [
+        {
+          "expr": "sum by (state) (rate(delta_work_runs_total[$__rate_interval]))",
+          "legendFormat": "{{state}}",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "stacking": {
+              "mode": "normal"
+            }
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Work duration p95 by kind",
+      "description": "",
+      "id": 9,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 26
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, kind) (rate(delta_work_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{kind}}",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Resource enqueues (inserted vs deduplicated)",
+      "description": "A rising deduplicated share means the same resources are being re-informed repeatedly.",
+      "id": 10,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 34
+      },
+      "targets": [
+        {
+          "expr": "sum by (result) (rate(delta_resource_enqueued_total[$__rate_interval]))",
+          "legendFormat": "{{result}}",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "stacking": {
+              "mode": "normal"
+            }
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Client.Inform results",
+      "description": "",
+      "id": 11,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 34
+      },
+      "targets": [
+        {
+          "expr": "sum by (result) (rate(delta_client_informs_total[$__rate_interval]))",
+          "legendFormat": "{{result}}",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "stacking": {
+              "mode": "normal"
+            }
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Resources by state",
+      "description": "",
+      "id": 12,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 42
+      },
+      "targets": [
+        {
+          "expr": "max by (state) (sum by (state, instance) (delta_resources))",
+          "legendFormat": "{{state}}",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Oldest failed / degraded / scheduled resource age",
+      "description": "",
+      "id": 13,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 42
+      },
+      "targets": [
+        {
+          "expr": "max by (kind, state) (delta_resources_oldest_age_seconds{state=~\"failed|degraded|scheduled\"})",
+          "legendFormat": "{{kind}} {{state}}",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "River backlog: oldest available job age by queue",
+      "description": "How long the oldest runnable job has waited for a worker.",
+      "id": 14,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 50
+      },
+      "targets": [
+        {
+          "expr": "max by (queue) (delta_jobs_oldest_scheduled_age_seconds{state=\"available\"})",
+          "legendFormat": "{{queue}}",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Maintenance activity",
+      "description": "",
+      "id": 15,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 50
+      },
+      "targets": [
+        {
+          "expr": "sum by (type) (increase(delta_maintenance_rescued_total[$__rate_interval]))",
+          "legendFormat": "rescued {{type}}",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          }
+        },
+        {
+          "expr": "sum(increase(delta_maintenance_degraded_total[$__rate_interval]))",
+          "legendFormat": "orphaned failed \u2192 degraded",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          }
+        },
+        {
+          "expr": "sum by (namespace) (increase(delta_maintenance_cleaned_total[$__rate_interval]))",
+          "legendFormat": "cleaned {{namespace}}",
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ]
+        }
+      }
+    }
+  ]
+}
