@@ -24,12 +24,13 @@ func (e ExpireResourceArgs) InsertOpts() river.InsertOpts {
 }
 
 type namespaceExpirer struct {
-	pool *pgxpool.Pool
+	pool      *pgxpool.Pool
+	batchSize int
 	river.WorkerDefaults[ExpireResourceArgs]
 }
 
 func NewNamespaceExpirer(pool *pgxpool.Pool) *namespaceExpirer {
-	return &namespaceExpirer{pool: pool}
+	return &namespaceExpirer{pool: pool, batchSize: 1000}
 }
 
 func (e *namespaceExpirer) Work(ctx context.Context, job *river.Job[ExpireResourceArgs]) error {
@@ -51,13 +52,21 @@ func (e *namespaceExpirer) Work(ctx context.Context, job *river.Job[ExpireResour
 
 		logger.DebugContext(ctx, "expiring resources for namespace", "namespace", namespace.Name)
 
-		numExpired, err := queries.ResourceExpire(ctx, &sqlc.ResourceExpireParams{
-			Namespace: namespace.Name,
-			ExpiryTtl: namespace.ExpiryTtl,
-		})
-		if err != nil {
-			logger.ErrorContext(ctx, "failed to expire resources for namespace", "namespace", namespace.Name, "error", err)
-			return err
+		var numExpired int64
+		for {
+			batchExpired, err := queries.ResourceExpire(ctx, &sqlc.ResourceExpireParams{
+				Namespace: namespace.Name,
+				ExpiryTtl: namespace.ExpiryTtl,
+				Max:       int64(e.batchSize),
+			})
+			if err != nil {
+				logger.ErrorContext(ctx, "failed to expire resources for namespace", "namespace", namespace.Name, "error", err)
+				return err
+			}
+			numExpired += batchExpired
+			if batchExpired < int64(e.batchSize) {
+				break
+			}
 		}
 
 		logger.InfoContext(ctx, "expired resources for namespace", "namespace", namespace.Name, "num_expired", numExpired)
