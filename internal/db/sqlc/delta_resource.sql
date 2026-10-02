@@ -44,7 +44,8 @@ SET state = CASE
         ELSE synced_at
     END,
     errors = CASE
-        WHEN $5::boolean THEN array_append(errors, $6::jsonb)
+        -- keep only the most recent 20 attempt errors
+        WHEN $5::boolean THEN (array_append(errors, $6::jsonb))[GREATEST(1, COALESCE(array_length(errors, 1), 0) - 18):]
         ELSE errors
     END
 WHERE id = @id
@@ -122,7 +123,7 @@ WHERE state = 'expired';
 UPDATE delta_resource
 SET state = 'pending',
     synced_at = NULL,
-    errors = array_append(errors, @error::jsonb)
+    errors = (array_append(errors, @error::jsonb))[GREATEST(1, COALESCE(array_length(errors, 1), 0) - 18):]
 WHERE id IN (
         SELECT id
         FROM delta_resource
@@ -142,7 +143,7 @@ RETURNING *;
 UPDATE delta_resource
 SET state = 'pending',
     synced_at = NULL,
-    errors = array_append(errors, @error::jsonb)
+    errors = (array_append(errors, @error::jsonb))[GREATEST(1, COALESCE(array_length(errors, 1), 0) - 18):]
 WHERE id IN (
         SELECT dr.id
         FROM delta_resource dr
@@ -161,3 +162,23 @@ WHERE id IN (
             )
     )
 RETURNING *;
+-- name: ResourceDegradeOrphanedFailed :execrows
+-- Mark 'failed' resources whose River job no longer exists (e.g. it was
+-- cancelled or deleted externally) as 'degraded'. Nothing would ever retry
+-- them, so without this they stayed 'failed' forever and were never cleaned.
+UPDATE delta_resource
+SET state = 'degraded'
+WHERE id IN (
+        SELECT dr.id
+        FROM delta_resource dr
+        WHERE dr.state = 'failed'
+            AND COALESCE(dr.attempted_at, dr.created_at) < NOW() - make_interval(secs => @stuck_horizon::integer)
+            AND NOT EXISTS (
+                SELECT 1
+                FROM river_job rj
+                WHERE rj.state IN ('available', 'pending', 'retryable', 'running', 'scheduled')
+                    AND rj.queue = dr.kind
+                    AND rj.kind = 'delta.resource.' || dr.kind
+                    AND rj.args->>'ID' = dr.id::text
+            )
+    );
