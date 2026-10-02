@@ -65,9 +65,9 @@ func (w *wrapperObject[T]) Timeout() time.Duration {
 }
 
 // Enqueue implements Object.Enqueue.
-func (w *wrapperObject[T]) Enqueue(ctx context.Context, tx pgx.Tx, client *river.Client[pgx.Tx]) error {
+func (w *wrapperObject[T]) Enqueue(ctx context.Context, tx pgx.Tx, client *river.Client[pgx.Tx]) (bool, error) {
 	if w.resource == nil {
-		return errors.New("resource is nil; UnmarshalResource must be called first")
+		return false, errors.New("resource is nil; UnmarshalResource must be called first")
 	}
 
 	resource := *w.resource
@@ -80,12 +80,11 @@ func (w *wrapperObject[T]) Enqueue(ctx context.Context, tx pgx.Tx, client *river
 	}
 
 	if tx != nil {
-		_, err := insertResourceJobTx(ctx, tx, client, resource, insertOpts)
-		return err
+		return insertResourceJobTx(ctx, tx, client, resource, insertOpts)
 	}
 
 	if _, err := client.Insert(ctx, resource, insertOpts); err != nil {
-		return err
+		return false, err
 	}
-	return nil
+	return true, nil
 }

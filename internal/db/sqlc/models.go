@@ -95,9 +95,10 @@ type DeltaResource struct {
 }
 
 type RiverJob struct {
-	ID    int64
-	State string
-	Queue string
-	Kind  string
-	Args  []byte
+	ID          int64
+	State       string
+	Queue       string
+	Kind        string
+	Args        []byte
+	ScheduledAt time.Time
 }

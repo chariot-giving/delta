@@ -50,7 +50,7 @@ func TestCleaner(t *testing.T) {
 	insertSyncedResources(t, ctx, client, "plain", 2500, old) // more than one batch
 	insertSyncedResources(t, ctx, client, "expiring", 10, old)
 
-	err = maintenance.NewCleaner(pool).Work(ctx, &river.Job[maintenance.CleanResourceArgs]{
+	err = maintenance.NewCleaner(pool, nil).Work(ctx, &river.Job[maintenance.CleanResourceArgs]{
 		JobRow: &rivertype.JobRow{},
 		Args: maintenance.CleanResourceArgs{
 			DeletedResourceRetentionPeriod:  24 * time.Hour,
@@ -81,7 +81,7 @@ func TestExpirer(t *testing.T) {
 		VALUES ('fresh', 'test_object', 'expiring', 'synced', 10, NOW())`)
 	require.NoError(t, err)
 
-	err = maintenance.NewNamespaceExpirer(pool).Work(ctx, &river.Job[maintenance.ExpireResourceArgs]{JobRow: &rivertype.JobRow{}})
+	err = maintenance.NewNamespaceExpirer(pool, nil).Work(ctx, &river.Job[maintenance.ExpireResourceArgs]{JobRow: &rivertype.JobRow{}})
 	require.NoError(t, err)
 
 	require.Equal(t, 1500, countResources(t, ctx, client, "expiring", "expired"))

@@ -22,7 +22,9 @@ type Object interface {
 	Compare(other any) (int, bool)
 	Work(ctx context.Context) error
 	Timeout() time.Duration
-	Enqueue(ctx context.Context, tx pgx.Tx, client *river.Client[pgx.Tx]) error
+	// Enqueue enqueues a job to work the resource, returning whether one was
+	// inserted (false when a job was already queued for it).
+	Enqueue(ctx context.Context, tx pgx.Tx, client *river.Client[pgx.Tx]) (bool, error)
 }
 
 // ObjectFactory provides an interface to a struct that can generate an

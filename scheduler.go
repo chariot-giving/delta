@@ -83,7 +83,7 @@ func (w *controllerScheduler[T]) Work(ctx context.Context, job *river.Job[Schedu
 		return err
 	}
 
-	err = object.Enqueue(ctx, tx, riverClient)
+	inserted, err := object.Enqueue(ctx, tx, riverClient)
 	if err != nil {
 		return err
 	}
@@ -92,6 +92,8 @@ func (w *controllerScheduler[T]) Work(ctx context.Context, job *river.Job[Schedu
 	if err != nil {
 		return err
 	}
+
+	client.recordEnqueue(ctx, resourceRow.ObjectKind, inserted)
 
 	logger.InfoContext(ctx, "scheduled resource", "resource_id", job.Args.ResourceID, "resource_kind", job.Args.object.Kind())
 

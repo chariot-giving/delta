@@ -199,3 +199,25 @@ WHERE id = ANY(ARRAY(
         FOR UPDATE OF dr SKIP LOCKED
     ))
     AND state = 'failed';
+-- name: ResourceStats :many
+-- Count resources by kind and state, with the age of the least recently
+-- attempted (or created, if never attempted) resource in each group.
+SELECT kind,
+    state,
+    count(*)::bigint AS count,
+    EXTRACT(EPOCH FROM NOW() - min(COALESCE(attempted_at, created_at)))::float8 AS oldest_age_seconds
+FROM delta_resource
+GROUP BY kind, state;
+-- name: JobStats :many
+-- Count unfinalized delta River jobs by queue, kind and state, with the age of
+-- the earliest scheduled_at in each group. For 'available' jobs that age is how
+-- long the oldest job has been waiting to be picked up.
+SELECT queue,
+    kind,
+    state,
+    count(*)::bigint AS count,
+    EXTRACT(EPOCH FROM NOW() - min(scheduled_at))::float8 AS oldest_scheduled_age_seconds
+FROM river_job
+WHERE state IN ('available', 'pending', 'retryable', 'running', 'scheduled')
+    AND kind LIKE 'delta.%'
+GROUP BY queue, kind, state;

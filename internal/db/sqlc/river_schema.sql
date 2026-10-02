@@ -6,5 +6,6 @@ CREATE TABLE river_job(
     state text NOT NULL,
     queue text NOT NULL,
     kind text NOT NULL,
-    args jsonb NOT NULL
+    args jsonb NOT NULL,
+    scheduled_at timestamptz NOT NULL
 );
