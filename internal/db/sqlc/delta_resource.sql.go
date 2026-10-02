@@ -10,6 +10,55 @@ import (
 	"time"
 )
 
+const jobStats = `-- name: JobStats :many
+SELECT queue,
+    kind,
+    state,
+    count(*)::bigint AS count,
+    EXTRACT(EPOCH FROM NOW() - min(scheduled_at))::float8 AS oldest_scheduled_age_seconds
+FROM river_job
+WHERE state IN ('available', 'pending', 'retryable', 'running', 'scheduled')
+    AND kind LIKE 'delta.%'
+GROUP BY queue, kind, state
+`
+
+type JobStatsRow struct {
+	Queue                     string
+	Kind                      string
+	State                     string
+	Count                     int64
+	OldestScheduledAgeSeconds float64
+}
+
+// Count unfinalized delta River jobs by queue, kind and state, with the age of
+// the earliest scheduled_at in each group. For 'available' jobs that age is how
+// long the oldest job has been waiting to be picked up.
+func (q *Queries) JobStats(ctx context.Context) ([]*JobStatsRow, error) {
+	rows, err := q.db.Query(ctx, jobStats)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []*JobStatsRow
+	for rows.Next() {
+		var i JobStatsRow
+		if err := rows.Scan(
+			&i.Queue,
+			&i.Kind,
+			&i.State,
+			&i.Count,
+			&i.OldestScheduledAgeSeconds,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, &i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const resourceCountExpired = `-- name: ResourceCountExpired :one
 SELECT count(*)
 FROM delta_resource
@@ -505,6 +554,49 @@ func (q *Queries) ResourceSetState(ctx context.Context, arg *ResourceSetStatePar
 		&i.Errors,
 	)
 	return &i, err
+}
+
+const resourceStats = `-- name: ResourceStats :many
+SELECT kind,
+    state,
+    count(*)::bigint AS count,
+    EXTRACT(EPOCH FROM NOW() - min(COALESCE(attempted_at, created_at)))::float8 AS oldest_age_seconds
+FROM delta_resource
+GROUP BY kind, state
+`
+
+type ResourceStatsRow struct {
+	Kind             string
+	State            DeltaResourceState
+	Count            int64
+	OldestAgeSeconds float64
+}
+
+// Count resources by kind and state, with the age of the least recently
+// attempted (or created, if never attempted) resource in each group.
+func (q *Queries) ResourceStats(ctx context.Context) ([]*ResourceStatsRow, error) {
+	rows, err := q.db.Query(ctx, resourceStats)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []*ResourceStatsRow
+	for rows.Next() {
+		var i ResourceStatsRow
+		if err := rows.Scan(
+			&i.Kind,
+			&i.State,
+			&i.Count,
+			&i.OldestAgeSeconds,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, &i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const resourceUpdateAndGetByObjectIDAndKind = `-- name: ResourceUpdateAndGetByObjectIDAndKind :one

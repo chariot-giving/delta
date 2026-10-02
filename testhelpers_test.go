@@ -185,8 +185,6 @@ func (c *testController) WorkCalls(objectID string) int {
 // testClient builds (but doesn't start) a Client managing the "default"
 // namespace with controller registered. Maintenance and informer schedules are
 // pushed far out so tests drive them explicitly.
-//
-//nolint:unparam // mutate is optional per-test config
 func testClient(t *testing.T, pool *pgxpool.Pool, controller *testController, mutate ...func(*Config)) *Client {
 	t.Helper()
 

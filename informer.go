@@ -198,7 +198,19 @@ func (i *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformA
 		}
 	}
 
-	return informFunc(ctx)
+	informErr := informFunc(ctx)
+	result := ResultSuccess
+	if informErr != nil {
+		result = ResultError
+	}
+	client.metrics.Counter(ctx, MetricInformRuns, 1, map[string]string{
+		"kind":   job.Args.ResourceKind,
+		"result": result,
+	})
+	client.metrics.Histogram(ctx, MetricInformDuration, time.Since(informStart).Seconds(), map[string]string{
+		"kind": job.Args.ResourceKind,
+	})
+	return informErr
 }
 
 func (i *controllerInformer[T]) Timeout(job *river.Job[InformArgs[T]]) time.Duration {
@@ -290,7 +302,7 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 			}
 
 			resourceRow := toResourceRow(&res.DeltaResource)
-			_, err = insertResourceJobTx(ctx, tx, riverClient, Resource[T]{Object: object, ResourceRow: &resourceRow}, &river.InsertOpts{
+			inserted, err := insertResourceJobTx(ctx, tx, riverClient, Resource[T]{Object: object, ResourceRow: &resourceRow}, &river.InsertOpts{
 				Queue:       object.Kind(),
 				Tags:        resourceRow.Tags,
 				Metadata:    resourceRow.Metadata,
@@ -303,7 +315,17 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 				return err
 			}
 
-			return tx.Commit(ctx)
+			if err := tx.Commit(ctx); err != nil {
+				return err
+			}
+
+			client.recordEnqueue(ctx, object.Kind(), inserted)
+			client.metrics.Counter(ctx, MetricInformObjects, 1, map[string]string{
+				"kind":   object.Kind(),
+				"result": ObjectResultCreated,
+			})
+
+			return nil
 		}
 		return fmt.Errorf("failed to get resource: %w", err)
 	}
@@ -311,6 +333,10 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 	// handle soft-deleted resources
 	if resource.State == sqlc.DeltaResourceStateDeleted {
 		logger.DebugContext(ctx, "skipping soft-deleted resource", "id", resource.ID, "kind", resource.Kind, "object_id", resource.ObjectID)
+		client.metrics.Counter(ctx, MetricInformObjects, 1, map[string]string{
+			"kind":   object.Kind(),
+			"result": ObjectResultDeleted,
+		})
 		return nil
 	}
 
@@ -322,6 +348,16 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 	if compare == 0 && resource.State == sqlc.DeltaResourceStateSynced && !args.ProcessExisting {
 		// if the objects are the same, the resource is synced, and we don't want to process existing, skip
 		logger.DebugContext(ctx, "skipping already processed object", "id", resource.ID, "kind", resource.Kind, "object_id", resource.ObjectID)
+		client.metrics.Counter(ctx, MetricInformObjects, 1, map[string]string{
+			"kind":   object.Kind(),
+			"result": ObjectResultSkipped,
+		})
+		resourceRow := toResourceRow(resource)
+		client.emitEvent(ctx, Event{
+			Resource:      &resourceRow,
+			EventCategory: EventCategoryObjectSkipped,
+			Timestamp:     time.Now(),
+		})
 		return nil
 	}
 
@@ -342,7 +378,7 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 	}
 
 	resourceRow := toResourceRow(updated)
-	_, err = insertResourceJobTx(ctx, tx, riverClient, Resource[T]{Object: object, ResourceRow: &resourceRow}, &river.InsertOpts{
+	inserted, err := insertResourceJobTx(ctx, tx, riverClient, Resource[T]{Object: object, ResourceRow: &resourceRow}, &river.InsertOpts{
 		Queue:       object.Kind(),
 		Tags:        resourceRow.Tags,
 		Metadata:    resourceRow.Metadata,
@@ -358,6 +394,12 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 	if err = tx.Commit(ctx); err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
+
+	client.recordEnqueue(ctx, object.Kind(), inserted)
+	client.metrics.Counter(ctx, MetricInformObjects, 1, map[string]string{
+		"kind":   object.Kind(),
+		"result": ObjectResultUpdated,
+	})
 
 	return nil
 }

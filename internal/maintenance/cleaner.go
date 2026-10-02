@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
+	"github.com/chariot-giving/delta/deltatype"
 	"github.com/chariot-giving/delta/internal/db/sqlc"
 	"github.com/chariot-giving/delta/internal/middleware"
 )
@@ -49,13 +50,18 @@ func (c CleanResourceArgs) InsertOpts() river.InsertOpts {
 type cleaner struct {
 	pool      *pgxpool.Pool
 	batchSize int
+	metrics   deltatype.MetricsCollector
 	river.WorkerDefaults[CleanResourceArgs]
 }
 
-func NewCleaner(pool *pgxpool.Pool) *cleaner {
+func NewCleaner(pool *pgxpool.Pool, metrics deltatype.MetricsCollector) *cleaner {
+	if metrics == nil {
+		metrics = deltatype.NoopMetrics{}
+	}
 	return &cleaner{
 		pool:      pool,
 		batchSize: 1000,
+		metrics:   metrics,
 	}
 }
 
@@ -110,6 +116,11 @@ func (c *cleaner) Work(ctx context.Context, job *river.Job[CleanResourceArgs]) e
 			}
 		}
 
+		if numDeleted > 0 {
+			c.metrics.Counter(ctx, deltatype.MetricMaintenanceCleaned, float64(numDeleted), map[string]string{
+				"namespace": namespace.Name,
+			})
+		}
 		logger.DebugContext(ctx, "deleted resources", "namespace", namespace.Name, "num_deleted", numDeleted)
 	}
 
