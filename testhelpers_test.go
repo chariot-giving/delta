@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -225,14 +226,31 @@ func startClient(t *testing.T, client *Client) {
 }
 
 // resourceState returns the state of the resource for objectID.
-func resourceState(t *testing.T, pool *pgxpool.Pool, objectID string) string {
+func resourceState(t *testing.T, pool *pgxpool.Pool, objectID string) deltatype.ResourceState {
 	t.Helper()
 
-	var state string
+	var state deltatype.ResourceState
 	err := pool.QueryRow(context.Background(),
 		"SELECT state::text FROM delta_resource WHERE object_id = $1 AND kind = 'test_object'", objectID).Scan(&state)
 	require.NoError(t, err)
 	return state
+}
+
+// countResourceJobs returns the number of River resource jobs for resource id
+// in any of states (all states when empty).
+func countResourceJobs(t *testing.T, pool *pgxpool.Pool, resourceID int64, states ...string) int {
+	t.Helper()
+
+	query := "SELECT count(*) FROM river_job WHERE kind = 'delta.resource.test_object' AND args->>'ID' = $1"
+	args := []any{strconv.FormatInt(resourceID, 10)}
+	if len(states) > 0 {
+		query += " AND state::text = ANY($2)"
+		args = append(args, states)
+	}
+
+	var count int
+	require.NoError(t, pool.QueryRow(context.Background(), query, args...).Scan(&count))
+	return count
 }
 
 // eventually polls cond until it returns true or the timeout elapses.

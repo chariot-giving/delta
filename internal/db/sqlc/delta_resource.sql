@@ -133,18 +133,31 @@ RETURNING *;
 -- Find resources stuck in the 'scheduled' state past the grace period and reset
 -- them to 'pending' so the rescheduler can re-enqueue a scheduler job for them.
 -- This protects against orphaning when the corresponding River job is discarded
--- externally
+-- externally.
+--
+-- A resource only counts as stuck when River has no unfinalized job for it.
+-- attempted_at is only set when a resource is worked, so the age check alone
+-- also matched resources that were just re-scheduled and still had a job
+-- queued, which then got enqueued a second time.
 UPDATE delta_resource
 SET state = 'pending',
     synced_at = NULL,
     errors = array_append(errors, @error::jsonb)
 WHERE id IN (
-        SELECT id
-        FROM delta_resource
-        WHERE state = 'scheduled'
+        SELECT dr.id
+        FROM delta_resource dr
+        WHERE dr.state = 'scheduled'
             AND EXTRACT(
                 EPOCH
-                FROM (NOW() - COALESCE(attempted_at, created_at))
+                FROM (NOW() - COALESCE(dr.attempted_at, dr.created_at))
             ) > @stuck_horizon::integer
+            AND NOT EXISTS (
+                SELECT 1
+                FROM river_job rj
+                WHERE rj.state IN ('available', 'pending', 'retryable', 'running', 'scheduled')
+                    AND rj.queue = dr.kind
+                    AND rj.kind = 'delta.resource.' || dr.kind
+                    AND rj.args->>'ID' = dr.id::text
+            )
     )
 RETURNING *;
