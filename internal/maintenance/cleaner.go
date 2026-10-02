@@ -2,6 +2,7 @@ package maintenance
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -10,6 +11,9 @@ import (
 	"github.com/chariot-giving/delta/internal/db/sqlc"
 	"github.com/chariot-giving/delta/internal/middleware"
 )
+
+// defaultNamespace mirrors the delta package's default namespace name.
+const defaultNamespace = "default"
 
 type CleanResourceArgs struct {
 	// DeletedResourceRetentionPeriod is the amount of time to keep deleted resources
@@ -63,34 +67,47 @@ func (c *cleaner) Work(ctx context.Context, job *river.Job[CleanResourceArgs]) e
 	if err != nil {
 		return err
 	}
-	namespaces = append(namespaces, &sqlc.DeltaNamespace{
-		Name: "default",
-	})
+	// Resources informed without a namespace live in "default", which may not
+	// have a delta_namespace row.
+	if !slices.ContainsFunc(namespaces, func(n *sqlc.DeltaNamespace) bool { return n.Name == defaultNamespace }) {
+		namespaces = append(namespaces, &sqlc.DeltaNamespace{Name: defaultNamespace})
+	}
 
 	logger.DebugContext(ctx, "cleaning resources", "num_namespaces", len(namespaces))
 
 	for _, namespace := range namespaces {
 		logger.DebugContext(ctx, "cleaning resources", "namespace", namespace.Name)
 
-		// Wrapped in a function so that defers run as expected.
-		numDeleted, err := func() (int, error) {
-			ctx, cancelFunc := context.WithTimeout(ctx, job.Args.Timeout)
-			defer cancelFunc()
+		syncedHorizon := time.Now().Add(-job.Args.SyncedResourceRetentionPeriod)
+		if namespace.ExpiryTtl > 0 {
+			// Synced resources in a namespace with an expiry are expired and
+			// re-synced rather than deleted. Deleting them first would mean they
+			// never expire.
+			syncedHorizon = time.Time{}
+		}
 
-			deleted, err := queries.ResourceDeleteBefore(ctx, &sqlc.ResourceDeleteBeforeParams{
-				Namespace:                  namespace.Name,
-				DeletedFinalizedAtHorizon:  time.Now().Add(-job.Args.DeletedResourceRetentionPeriod),
-				SyncedFinalizedAtHorizon:   time.Now().Add(-job.Args.SyncedResourceRetentionPeriod),
-				DegradedFinalizedAtHorizon: time.Now().Add(-job.Args.DegradedResourceRetentionPeriod),
-				Max:                        int64(c.batchSize),
-			})
+		var numDeleted int64
+		for {
+			// Wrapped in a function so that defers run as expected.
+			batchDeleted, err := func() (int64, error) {
+				ctx, cancelFunc := context.WithTimeout(ctx, job.Args.Timeout)
+				defer cancelFunc()
+
+				return queries.ResourceDeleteBefore(ctx, &sqlc.ResourceDeleteBeforeParams{
+					Namespace:                  namespace.Name,
+					DeletedFinalizedAtHorizon:  time.Now().Add(-job.Args.DeletedResourceRetentionPeriod),
+					SyncedFinalizedAtHorizon:   syncedHorizon,
+					DegradedFinalizedAtHorizon: time.Now().Add(-job.Args.DegradedResourceRetentionPeriod),
+					Max:                        int64(c.batchSize),
+				})
+			}()
 			if err != nil {
-				return 0, err
+				return err
 			}
-			return int(deleted), nil
-		}()
-		if err != nil {
-			return err
+			numDeleted += batchDeleted
+			if batchDeleted < int64(c.batchSize) {
+				break
+			}
 		}
 
 		logger.DebugContext(ctx, "deleted resources", "namespace", namespace.Name, "num_deleted", numDeleted)

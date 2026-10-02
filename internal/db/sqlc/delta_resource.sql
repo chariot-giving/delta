@@ -78,19 +78,26 @@ SET external_created_at = $3,
 RETURNING sqlc.embed(delta_resource),
     (xmax = 0) as is_insert;
 -- name: ResourceExpire :execrows
--- Update the state of delta_resources to 'expired' based on expiryTTL
+-- Update the state of up to @max synced delta_resources to 'expired' based on
+-- expiryTTL. (Only synced, expired and deleted resources have a synced_at, so
+-- this matches what the previous `state NOT IN ('expired', 'deleted')` did.)
+-- Rows locked by a worker are skipped and picked up on a later run.
 UPDATE delta_resource
 SET state = 'expired'
-WHERE namespace = @namespace
-    AND state NOT IN ('expired', 'deleted') -- Only update resources that are not already expired or deleted
-    AND EXTRACT(
-        EPOCH
-        FROM (NOW() - synced_at)
-    ) > @expiry_ttl::integer;
+WHERE id = ANY(ARRAY(
+        SELECT dr.id
+        FROM delta_resource dr
+        WHERE dr.namespace = @namespace
+            AND dr.state = 'synced'
+            AND dr.synced_at < NOW() - make_interval(secs => @expiry_ttl::integer)
+        LIMIT @max::bigint
+        FOR UPDATE SKIP LOCKED
+    ))
+    AND state = 'synced';
 -- name: ResourceDeleteBefore :one
 WITH deleted_resources AS (
     DELETE FROM delta_resource
-    WHERE id IN (
+    WHERE id = ANY(ARRAY(
             SELECT id
             FROM delta_resource
             WHERE delta_resource.namespace = @namespace
@@ -110,8 +117,11 @@ WITH deleted_resources AS (
                 )
             ORDER BY id
             LIMIT @max::bigint
-        )
-    RETURNING *
+            FOR UPDATE SKIP LOCKED
+        ))
+        -- re-check the state in case a row changed before it was locked
+        AND state IN ('deleted', 'synced', 'degraded')
+    RETURNING id
 )
 SELECT count(*)
 FROM deleted_resources;
@@ -120,16 +130,21 @@ SELECT count(*)
 FROM delta_resource
 WHERE state = 'expired';
 -- name: ResourceResetExpired :many
+-- Reset up to @max expired resources to 'pending' so they can be re-scheduled.
+-- Rows locked by a worker are skipped and picked up on a later run.
 UPDATE delta_resource
 SET state = 'pending',
     synced_at = NULL,
     errors = (array_append(errors, @error::jsonb))[GREATEST(1, COALESCE(array_length(errors, 1), 0) - 18):]
-WHERE id IN (
-        SELECT id
-        FROM delta_resource
-        WHERE state = 'expired'
-    )
-RETURNING *;
+WHERE id = ANY(ARRAY(
+        SELECT dr.id
+        FROM delta_resource dr
+        WHERE dr.state = 'expired'
+        LIMIT @max::bigint
+        FOR UPDATE SKIP LOCKED
+    ))
+    AND state = 'expired'
+RETURNING id, kind;
 -- name: ResourceRescueStuckScheduled :many
 -- Find resources stuck in the 'scheduled' state past the grace period and reset
 -- them to 'pending' so the rescheduler can re-enqueue a scheduler job for them.
@@ -144,14 +159,11 @@ UPDATE delta_resource
 SET state = 'pending',
     synced_at = NULL,
     errors = (array_append(errors, @error::jsonb))[GREATEST(1, COALESCE(array_length(errors, 1), 0) - 18):]
-WHERE id IN (
+WHERE id = ANY(ARRAY(
         SELECT dr.id
         FROM delta_resource dr
         WHERE dr.state = 'scheduled'
-            AND EXTRACT(
-                EPOCH
-                FROM (NOW() - COALESCE(dr.attempted_at, dr.created_at))
-            ) > @stuck_horizon::integer
+            AND COALESCE(dr.attempted_at, dr.created_at) < NOW() - make_interval(secs => @stuck_horizon::integer)
             AND NOT EXISTS (
                 SELECT 1
                 FROM river_job rj
@@ -160,15 +172,18 @@ WHERE id IN (
                     AND rj.kind = 'delta.resource.' || dr.kind
                     AND rj.args->>'ID' = dr.id::text
             )
-    )
-RETURNING *;
+        LIMIT @max::bigint
+        FOR UPDATE OF dr SKIP LOCKED
+    ))
+    AND state = 'scheduled'
+RETURNING id, kind;
 -- name: ResourceDegradeOrphanedFailed :execrows
 -- Mark 'failed' resources whose River job no longer exists (e.g. it was
 -- cancelled or deleted externally) as 'degraded'. Nothing would ever retry
 -- them, so without this they stayed 'failed' forever and were never cleaned.
 UPDATE delta_resource
 SET state = 'degraded'
-WHERE id IN (
+WHERE id = ANY(ARRAY(
         SELECT dr.id
         FROM delta_resource dr
         WHERE dr.state = 'failed'
@@ -181,4 +196,6 @@ WHERE id IN (
                     AND rj.kind = 'delta.resource.' || dr.kind
                     AND rj.args->>'ID' = dr.id::text
             )
-    );
+        FOR UPDATE OF dr SKIP LOCKED
+    ))
+    AND state = 'failed';

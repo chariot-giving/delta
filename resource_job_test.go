@@ -81,6 +81,7 @@ func TestRescueStuckScheduled_SkipsResourcesWithQueuedJob(t *testing.T) {
 	rescued, err := sqlc.New(pool).ResourceRescueStuckScheduled(ctx, &sqlc.ResourceRescueStuckScheduledParams{
 		Error:        []byte(`{}`),
 		StuckHorizon: int32(time.Hour.Seconds()),
+		Max:          100,
 	})
 	require.NoError(t, err)
 	require.Len(t, rescued, 1)
