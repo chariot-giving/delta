@@ -392,6 +392,10 @@ func (c *Client) Inform(ctx context.Context, object Object, opts *InformOpts) (*
 
 // InformTx is the same as Inform but allows you to pass in a transaction.
 func (c *Client) InformTx(ctx context.Context, tx pgx.Tx, object Object, opts *InformOpts) (*deltatype.ObjectInformResult, error) {
+	if opts == nil {
+		opts = &InformOpts{}
+	}
+
 	queries := sqlc.New(tx)
 
 	objectInformOpts := InformOpts{}

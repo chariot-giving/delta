@@ -18,6 +18,8 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivermigrate"
 	"github.com/stretchr/testify/require"
+
+	"github.com/chariot-giving/delta/deltatype"
 )
 
 // testDatabaseURLEnv names the environment variable holding the Postgres URL
@@ -182,6 +184,8 @@ func (c *testController) WorkCalls(objectID string) int {
 // testClient builds (but doesn't start) a Client managing the "default"
 // namespace with controller registered. Maintenance and informer schedules are
 // pushed far out so tests drive them explicitly.
+//
+//nolint:unparam // mutate is optional per-test config
 func testClient(t *testing.T, pool *pgxpool.Pool, controller *testController, mutate ...func(*Config)) *Client {
 	t.Helper()
 
@@ -232,7 +236,10 @@ func resourceState(t *testing.T, pool *pgxpool.Pool, objectID string) string {
 }
 
 // eventually polls cond until it returns true or the timeout elapses.
-func eventually(t *testing.T, cond func() bool, msgAndArgs ...any) {
+func eventually(t *testing.T, cond func() bool) {
 	t.Helper()
-	require.Eventually(t, cond, 10*time.Second, 20*time.Millisecond, msgAndArgs...)
+	require.Eventually(t, cond, 10*time.Second, 20*time.Millisecond)
 }
+
+//nolint:gochecknoglobals
+var deltatypeResourceRowForTest = deltatype.ResourceRow{ID: 999_999, ObjectID: "missing", ObjectKind: "test_object"}
