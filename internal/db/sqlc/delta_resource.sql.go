@@ -106,6 +106,36 @@ func (q *Queries) ResourceCreateOrUpdate(ctx context.Context, arg *ResourceCreat
 	return &i, err
 }
 
+const resourceDegradeOrphanedFailed = `-- name: ResourceDegradeOrphanedFailed :execrows
+UPDATE delta_resource
+SET state = 'degraded'
+WHERE id IN (
+        SELECT dr.id
+        FROM delta_resource dr
+        WHERE dr.state = 'failed'
+            AND COALESCE(dr.attempted_at, dr.created_at) < NOW() - make_interval(secs => $1::integer)
+            AND NOT EXISTS (
+                SELECT 1
+                FROM river_job rj
+                WHERE rj.state IN ('available', 'pending', 'retryable', 'running', 'scheduled')
+                    AND rj.queue = dr.kind
+                    AND rj.kind = 'delta.resource.' || dr.kind
+                    AND rj.args->>'ID' = dr.id::text
+            )
+    )
+`
+
+// Mark 'failed' resources whose River job no longer exists (e.g. it was
+// cancelled or deleted externally) as 'degraded'. Nothing would ever retry
+// them, so without this they stayed 'failed' forever and were never cleaned.
+func (q *Queries) ResourceDegradeOrphanedFailed(ctx context.Context, stuckHorizon int32) (int64, error) {
+	result, err := q.db.Exec(ctx, resourceDegradeOrphanedFailed, stuckHorizon)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const resourceDeleteBefore = `-- name: ResourceDeleteBefore :one
 WITH deleted_resources AS (
     DELETE FROM delta_resource
@@ -254,7 +284,7 @@ const resourceRescueStuckScheduled = `-- name: ResourceRescueStuckScheduled :man
 UPDATE delta_resource
 SET state = 'pending',
     synced_at = NULL,
-    errors = array_append(errors, $1::jsonb)
+    errors = (array_append(errors, $1::jsonb))[GREATEST(1, COALESCE(array_length(errors, 1), 0) - 18):]
 WHERE id IN (
         SELECT dr.id
         FROM delta_resource dr
@@ -330,7 +360,7 @@ const resourceResetExpired = `-- name: ResourceResetExpired :many
 UPDATE delta_resource
 SET state = 'pending',
     synced_at = NULL,
-    errors = array_append(errors, $1::jsonb)
+    errors = (array_append(errors, $1::jsonb))[GREATEST(1, COALESCE(array_length(errors, 1), 0) - 18):]
 WHERE id IN (
         SELECT id
         FROM delta_resource
@@ -427,7 +457,8 @@ SET state = CASE
         ELSE synced_at
     END,
     errors = CASE
-        WHEN $5::boolean THEN array_append(errors, $6::jsonb)
+        -- keep only the most recent 20 attempt errors
+        WHEN $5::boolean THEN (array_append(errors, $6::jsonb))[GREATEST(1, COALESCE(array_length(errors, 1), 0) - 18):]
         ELSE errors
     END
 WHERE id = $7
