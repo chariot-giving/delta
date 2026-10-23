@@ -13,11 +13,11 @@ jobs:
       matrix:
         # Run the 4 latest Postgres versions against the latest Go version:
         go-version:
-          - "1.24"
+          - "1.27.x"
         postgres-version: [14, 15, 16, 17]
         include:
           # Also run previous Go version against the latest Postgres version:
-          - go-version: "1.24"
+          - go-version: "1.26.x"
             postgres-version: 17
       fail-fast: false
     timeout-minutes: 5
