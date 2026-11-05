@@ -86,6 +86,15 @@ func (r *rescheduler) Work(ctx context.Context, job *river.Job[RescheduleResourc
 		return err
 	}
 
+	degraded, err := queries.ResourceDegradeOrphanedFailed(ctx, stuckHorizonSeconds)
+	if err != nil {
+		logger.ErrorContext(ctx, "error degrading orphaned failed resources", "error", err)
+		return err
+	}
+	if degraded > 0 {
+		logger.InfoContext(ctx, "degraded orphaned failed resources", "count", degraded)
+	}
+
 	resources := make([]*sqlc.DeltaResource, 0, len(expired)+len(rescued))
 	resources = append(resources, expired...)
 	resources = append(resources, rescued...)

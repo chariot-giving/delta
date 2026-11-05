@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
@@ -129,7 +130,7 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 			errorData, err := json.Marshal(deltatype.AttemptError{
 				At:      now,
 				Attempt: resourceRow.Attempt,
-				Error:   wErr.Error(),
+				Error:   truncateError(wErr.Error()),
 			})
 			if err != nil {
 				return fmt.Errorf("error marshaling error JSON: %w", err)
@@ -174,7 +175,7 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 		errorData, err := json.Marshal(deltatype.AttemptError{
 			At:      now,
 			Attempt: resourceRow.Attempt,
-			Error:   wErr.Error(),
+			Error:   truncateError(wErr.Error()),
 		})
 		if err != nil {
 			return fmt.Errorf("error marshaling error JSON: %w", err)
@@ -242,4 +243,22 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 func (w *controllerWorker[T]) Timeout(job *river.Job[Resource[T]]) time.Duration {
 	// we enforce our own timeout so we want to remove River's underlying timeout on the job
 	return -1
+}
+
+// maxStoredErrorLength bounds the size of an error message persisted to a
+// resource's errors column.
+const maxStoredErrorLength = 4096
+
+// truncateError shortens msg to at most maxStoredErrorLength bytes without
+// splitting a UTF-8 character.
+func truncateError(msg string) string {
+	if len(msg) <= maxStoredErrorLength {
+		return msg
+	}
+	const suffix = "... (truncated)"
+	cut := maxStoredErrorLength - len(suffix)
+	for cut > 0 && !utf8.RuneStart(msg[cut]) {
+		cut--
+	}
+	return msg[:cut] + suffix
 }

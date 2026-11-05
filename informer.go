@@ -291,9 +291,10 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 
 			resourceRow := toResourceRow(&res.DeltaResource)
 			_, err = insertResourceJobTx(ctx, tx, riverClient, Resource[T]{Object: object, ResourceRow: &resourceRow}, &river.InsertOpts{
-				Queue:    object.Kind(),
-				Tags:     resourceRow.Tags,
-				Metadata: resourceRow.Metadata,
+				Queue:       object.Kind(),
+				Tags:        resourceRow.Tags,
+				Metadata:    resourceRow.Metadata,
+				MaxAttempts: resourceRow.MaxAttempts,
 				UniqueOpts: river.UniqueOpts{
 					ByArgs: true,
 				},
@@ -342,9 +343,10 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 
 	resourceRow := toResourceRow(updated)
 	_, err = insertResourceJobTx(ctx, tx, riverClient, Resource[T]{Object: object, ResourceRow: &resourceRow}, &river.InsertOpts{
-		Queue:    object.Kind(),
-		Tags:     resourceRow.Tags,
-		Metadata: resourceRow.Metadata,
+		Queue:       object.Kind(),
+		Tags:        resourceRow.Tags,
+		Metadata:    resourceRow.Metadata,
+		MaxAttempts: resourceRow.MaxAttempts,
 		UniqueOpts: river.UniqueOpts{
 			ByArgs: true,
 		},
