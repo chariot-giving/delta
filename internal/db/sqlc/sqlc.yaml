@@ -5,7 +5,9 @@ sql:
       - delta_namespace.sql
       - delta_resource.sql
       - delta_controller.sql
-    schema: "./../migrations/*/"
+    schema:
+      - "./../migrations/"
+      - "river_schema.sql"
     gen:
       go:
         package: "sqlc"

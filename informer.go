@@ -290,7 +290,7 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 			}
 
 			resourceRow := toResourceRow(&res.DeltaResource)
-			_, err = riverClient.InsertTx(ctx, tx, Resource[T]{Object: object, ResourceRow: &resourceRow}, &river.InsertOpts{
+			_, err = insertResourceJobTx(ctx, tx, riverClient, Resource[T]{Object: object, ResourceRow: &resourceRow}, &river.InsertOpts{
 				Queue:    object.Kind(),
 				Tags:     resourceRow.Tags,
 				Metadata: resourceRow.Metadata,
@@ -341,7 +341,7 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 	}
 
 	resourceRow := toResourceRow(updated)
-	_, err = riverClient.InsertTx(ctx, tx, Resource[T]{Object: object, ResourceRow: &resourceRow}, &river.InsertOpts{
+	_, err = insertResourceJobTx(ctx, tx, riverClient, Resource[T]{Object: object, ResourceRow: &resourceRow}, &river.InsertOpts{
 		Queue:    object.Kind(),
 		Tags:     resourceRow.Tags,
 		Metadata: resourceRow.Metadata,

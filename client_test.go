@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/chariot-giving/delta/deltatype"
 )
 
 func TestClient_InformSyncsResource(t *testing.T) {
@@ -19,7 +21,7 @@ func TestClient_InformSyncsResource(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, result.AlreadyExists)
 
-	eventually(t, func() bool { return resourceState(t, pool, "obj-1") == "synced" })
+	eventually(t, func() bool { return resourceState(t, pool, "obj-1") == deltatype.ResourceStateSynced })
 	require.Equal(t, 1, controller.WorkCalls("obj-1"))
 }
 
@@ -34,7 +36,7 @@ func TestClient_InformNilOpts(t *testing.T) {
 	_, err := client.Inform(context.Background(), testObject{ObjectID: "obj-nil-opts"}, nil)
 	require.NoError(t, err)
 
-	eventually(t, func() bool { return resourceState(t, pool, "obj-nil-opts") == "synced" })
+	eventually(t, func() bool { return resourceState(t, pool, "obj-nil-opts") == deltatype.ResourceStateSynced })
 }
 
 func TestClient_ScheduleInformNilOptions(t *testing.T) {
