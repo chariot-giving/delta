@@ -57,3 +57,30 @@ func TestClient_ScheduleInformNilOptions(t *testing.T) {
 		return synced == 2
 	})
 }
+
+func TestClient_InformSkipsUnchangedSyncedResource(t *testing.T) {
+	t.Parallel()
+
+	pool := testPool(t)
+	controller := &testController{}
+	client := testClient(t, pool, controller)
+	startClient(t, client)
+	ctx := context.Background()
+
+	_, err := client.Inform(ctx, testObject{ObjectID: "same", Value: "a"}, nil)
+	require.NoError(t, err)
+	eventually(t, func() bool { return resourceState(t, pool, "same") == deltatype.ResourceStateSynced })
+
+	result, err := client.Inform(ctx, testObject{ObjectID: "same", Value: "a"}, nil)
+	require.NoError(t, err)
+	require.True(t, result.Skipped)
+	require.True(t, result.AlreadyExists)
+	require.Equal(t, deltatype.ResourceStateSynced, resourceState(t, pool, "same"))
+	require.Equal(t, 1, countResourceJobs(t, pool, result.Resource.ID))
+
+	// A changed object is still re-worked.
+	result, err = client.Inform(ctx, testObject{ObjectID: "same", Value: "b"}, nil)
+	require.NoError(t, err)
+	require.False(t, result.Skipped)
+	eventually(t, func() bool { return controller.WorkCalls("same") == 2 })
+}

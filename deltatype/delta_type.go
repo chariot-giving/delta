@@ -168,6 +168,10 @@ type ObjectInformResult struct {
 
 	// AlreadyExists is true if the resource already existed in the database.
 	AlreadyExists bool
+
+	// Skipped is true if the object was unchanged from an already synced
+	// resource, so nothing was written or enqueued.
+	Skipped bool
 }
 
 type Namespace struct {

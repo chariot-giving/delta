@@ -361,19 +361,27 @@ func (i *controllerInformer[T]) processObject(ctx context.Context, object T, arg
 }
 
 func (i *controllerInformer[T]) compareObjects(object T, resource deltatype.ResourceRow) (int, error) {
-	resourceObject := i.factory.Make(&resource)
+	return compareObjectToResource(i.factory, object, resource)
+}
+
+// compareObjectToResource compares object against the object stored in
+// resource, returning 0 when they're equivalent. Objects implementing
+// ComparableObject are compared with Compare; otherwise the hashes of their
+// JSON encodings are compared.
+func compareObjectToResource(factory object.ObjectFactory, obj Object, resource deltatype.ResourceRow) (int, error) {
+	resourceObject := factory.Make(&resource)
 	if err := resourceObject.UnmarshalResource(); err != nil {
 		return 0, fmt.Errorf("failed to unmarshal resource: %w", err)
 	}
 
-	if compare, ok := resourceObject.Compare(object); ok {
+	if compare, ok := resourceObject.Compare(obj); ok {
 		return compare, nil
 	}
 
 	// check hash
 	// we lose chronological ordering with the hash (that's why we prefer the object comparison)
 	// TODO: use deterministic ordering of fields to ensure consistent hash
-	objBytes, err := json.Marshal(object)
+	objBytes, err := json.Marshal(obj)
 	if err != nil {
 		return 0, err
 	}
