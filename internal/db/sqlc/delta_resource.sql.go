@@ -109,7 +109,7 @@ func (q *Queries) ResourceCreateOrUpdate(ctx context.Context, arg *ResourceCreat
 const resourceDegradeOrphanedFailed = `-- name: ResourceDegradeOrphanedFailed :execrows
 UPDATE delta_resource
 SET state = 'degraded'
-WHERE id IN (
+WHERE id = ANY(ARRAY(
         SELECT dr.id
         FROM delta_resource dr
         WHERE dr.state = 'failed'
@@ -122,7 +122,9 @@ WHERE id IN (
                     AND rj.kind = 'delta.resource.' || dr.kind
                     AND rj.args->>'ID' = dr.id::text
             )
-    )
+        FOR UPDATE OF dr SKIP LOCKED
+    ))
+    AND state = 'failed'
 `
 
 // Mark 'failed' resources whose River job no longer exists (e.g. it was
@@ -139,7 +141,7 @@ func (q *Queries) ResourceDegradeOrphanedFailed(ctx context.Context, stuckHorizo
 const resourceDeleteBefore = `-- name: ResourceDeleteBefore :one
 WITH deleted_resources AS (
     DELETE FROM delta_resource
-    WHERE id IN (
+    WHERE id = ANY(ARRAY(
             SELECT id
             FROM delta_resource
             WHERE delta_resource.namespace = $1
@@ -159,8 +161,11 @@ WITH deleted_resources AS (
                 )
             ORDER BY id
             LIMIT $5::bigint
-        )
-    RETURNING id, state, attempt, max_attempts, attempted_at, created_at, synced_at, external_created_at, object_id, kind, namespace, object, hash, metadata, tags, errors
+            FOR UPDATE SKIP LOCKED
+        ))
+        -- re-check the state in case a row changed before it was locked
+        AND state IN ('deleted', 'synced', 'degraded')
+    RETURNING id
 )
 SELECT count(*)
 FROM deleted_resources
@@ -190,22 +195,30 @@ func (q *Queries) ResourceDeleteBefore(ctx context.Context, arg *ResourceDeleteB
 const resourceExpire = `-- name: ResourceExpire :execrows
 UPDATE delta_resource
 SET state = 'expired'
-WHERE namespace = $1
-    AND state NOT IN ('expired', 'deleted') -- Only update resources that are not already expired or deleted
-    AND EXTRACT(
-        EPOCH
-        FROM (NOW() - synced_at)
-    ) > $2::integer
+WHERE id = ANY(ARRAY(
+        SELECT dr.id
+        FROM delta_resource dr
+        WHERE dr.namespace = $1
+            AND dr.state = 'synced'
+            AND dr.synced_at < NOW() - make_interval(secs => $2::integer)
+        LIMIT $3::bigint
+        FOR UPDATE SKIP LOCKED
+    ))
+    AND state = 'synced'
 `
 
 type ResourceExpireParams struct {
 	Namespace string
 	ExpiryTtl int32
+	Max       int64
 }
 
-// Update the state of delta_resources to 'expired' based on expiryTTL
+// Update the state of up to @max synced delta_resources to 'expired' based on
+// expiryTTL. (Only synced, expired and deleted resources have a synced_at, so
+// this matches what the previous `state NOT IN ('expired', 'deleted')` did.)
+// Rows locked by a worker are skipped and picked up on a later run.
 func (q *Queries) ResourceExpire(ctx context.Context, arg *ResourceExpireParams) (int64, error) {
-	result, err := q.db.Exec(ctx, resourceExpire, arg.Namespace, arg.ExpiryTtl)
+	result, err := q.db.Exec(ctx, resourceExpire, arg.Namespace, arg.ExpiryTtl, arg.Max)
 	if err != nil {
 		return 0, err
 	}
@@ -285,14 +298,11 @@ UPDATE delta_resource
 SET state = 'pending',
     synced_at = NULL,
     errors = (array_append(errors, $1::jsonb))[GREATEST(1, COALESCE(array_length(errors, 1), 0) - 18):]
-WHERE id IN (
+WHERE id = ANY(ARRAY(
         SELECT dr.id
         FROM delta_resource dr
         WHERE dr.state = 'scheduled'
-            AND EXTRACT(
-                EPOCH
-                FROM (NOW() - COALESCE(dr.attempted_at, dr.created_at))
-            ) > $2::integer
+            AND COALESCE(dr.attempted_at, dr.created_at) < NOW() - make_interval(secs => $2::integer)
             AND NOT EXISTS (
                 SELECT 1
                 FROM river_job rj
@@ -301,13 +311,22 @@ WHERE id IN (
                     AND rj.kind = 'delta.resource.' || dr.kind
                     AND rj.args->>'ID' = dr.id::text
             )
-    )
-RETURNING id, state, attempt, max_attempts, attempted_at, created_at, synced_at, external_created_at, object_id, kind, namespace, object, hash, metadata, tags, errors
+        LIMIT $3::bigint
+        FOR UPDATE OF dr SKIP LOCKED
+    ))
+    AND state = 'scheduled'
+RETURNING id, kind
 `
 
 type ResourceRescueStuckScheduledParams struct {
 	Error        []byte
 	StuckHorizon int32
+	Max          int64
+}
+
+type ResourceRescueStuckScheduledRow struct {
+	ID   int64
+	Kind string
 }
 
 // Find resources stuck in the 'scheduled' state past the grace period and reset
@@ -319,33 +338,16 @@ type ResourceRescueStuckScheduledParams struct {
 // attempted_at is only set when a resource is worked, so the age check alone
 // also matched resources that were just re-scheduled and still had a job
 // queued, which then got enqueued a second time.
-func (q *Queries) ResourceRescueStuckScheduled(ctx context.Context, arg *ResourceRescueStuckScheduledParams) ([]*DeltaResource, error) {
-	rows, err := q.db.Query(ctx, resourceRescueStuckScheduled, arg.Error, arg.StuckHorizon)
+func (q *Queries) ResourceRescueStuckScheduled(ctx context.Context, arg *ResourceRescueStuckScheduledParams) ([]*ResourceRescueStuckScheduledRow, error) {
+	rows, err := q.db.Query(ctx, resourceRescueStuckScheduled, arg.Error, arg.StuckHorizon, arg.Max)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []*DeltaResource
+	var items []*ResourceRescueStuckScheduledRow
 	for rows.Next() {
-		var i DeltaResource
-		if err := rows.Scan(
-			&i.ID,
-			&i.State,
-			&i.Attempt,
-			&i.MaxAttempts,
-			&i.AttemptedAt,
-			&i.CreatedAt,
-			&i.SyncedAt,
-			&i.ExternalCreatedAt,
-			&i.ObjectID,
-			&i.Kind,
-			&i.Namespace,
-			&i.Object,
-			&i.Hash,
-			&i.Metadata,
-			&i.Tags,
-			&i.Errors,
-		); err != nil {
+		var i ResourceRescueStuckScheduledRow
+		if err := rows.Scan(&i.ID, &i.Kind); err != nil {
 			return nil, err
 		}
 		items = append(items, &i)
@@ -361,41 +363,39 @@ UPDATE delta_resource
 SET state = 'pending',
     synced_at = NULL,
     errors = (array_append(errors, $1::jsonb))[GREATEST(1, COALESCE(array_length(errors, 1), 0) - 18):]
-WHERE id IN (
-        SELECT id
-        FROM delta_resource
-        WHERE state = 'expired'
-    )
-RETURNING id, state, attempt, max_attempts, attempted_at, created_at, synced_at, external_created_at, object_id, kind, namespace, object, hash, metadata, tags, errors
+WHERE id = ANY(ARRAY(
+        SELECT dr.id
+        FROM delta_resource dr
+        WHERE dr.state = 'expired'
+        LIMIT $2::bigint
+        FOR UPDATE SKIP LOCKED
+    ))
+    AND state = 'expired'
+RETURNING id, kind
 `
 
-func (q *Queries) ResourceResetExpired(ctx context.Context, error []byte) ([]*DeltaResource, error) {
-	rows, err := q.db.Query(ctx, resourceResetExpired, error)
+type ResourceResetExpiredParams struct {
+	Error []byte
+	Max   int64
+}
+
+type ResourceResetExpiredRow struct {
+	ID   int64
+	Kind string
+}
+
+// Reset up to @max expired resources to 'pending' so they can be re-scheduled.
+// Rows locked by a worker are skipped and picked up on a later run.
+func (q *Queries) ResourceResetExpired(ctx context.Context, arg *ResourceResetExpiredParams) ([]*ResourceResetExpiredRow, error) {
+	rows, err := q.db.Query(ctx, resourceResetExpired, arg.Error, arg.Max)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []*DeltaResource
+	var items []*ResourceResetExpiredRow
 	for rows.Next() {
-		var i DeltaResource
-		if err := rows.Scan(
-			&i.ID,
-			&i.State,
-			&i.Attempt,
-			&i.MaxAttempts,
-			&i.AttemptedAt,
-			&i.CreatedAt,
-			&i.SyncedAt,
-			&i.ExternalCreatedAt,
-			&i.ObjectID,
-			&i.Kind,
-			&i.Namespace,
-			&i.Object,
-			&i.Hash,
-			&i.Metadata,
-			&i.Tags,
-			&i.Errors,
-		); err != nil {
+		var i ResourceResetExpiredRow
+		if err := rows.Scan(&i.ID, &i.Kind); err != nil {
 			return nil, err
 		}
 		items = append(items, &i)

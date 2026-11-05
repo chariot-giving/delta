@@ -15,6 +15,11 @@ import (
 	"github.com/chariot-giving/delta/internal/middleware"
 )
 
+// rescheduleBatchSize caps how many expired and how many stuck resources are
+// rescheduled per run, bounding the transaction and the River batch insert.
+// Anything left over is handled on the next run.
+const rescheduleBatchSize = 1000
+
 type RescheduleResourceArgs struct{}
 
 func (r RescheduleResourceArgs) Kind() string {
@@ -70,7 +75,10 @@ func (r *rescheduler) Work(ctx context.Context, job *river.Job[RescheduleResourc
 
 	queries := sqlc.New(tx)
 
-	expired, err := queries.ResourceResetExpired(ctx, expiredErrorData)
+	expired, err := queries.ResourceResetExpired(ctx, &sqlc.ResourceResetExpiredParams{
+		Error: expiredErrorData,
+		Max:   rescheduleBatchSize,
+	})
 	if err != nil {
 		logger.ErrorContext(ctx, "error resetting expired resources", "error", err)
 		return err
@@ -80,6 +88,7 @@ func (r *rescheduler) Work(ctx context.Context, job *river.Job[RescheduleResourc
 	rescued, err := queries.ResourceRescueStuckScheduled(ctx, &sqlc.ResourceRescueStuckScheduledParams{
 		Error:        stuckErrorData,
 		StuckHorizon: stuckHorizonSeconds,
+		Max:          rescheduleBatchSize,
 	})
 	if err != nil {
 		logger.ErrorContext(ctx, "error rescuing stuck scheduled resources", "error", err)
@@ -95,9 +104,17 @@ func (r *rescheduler) Work(ctx context.Context, job *river.Job[RescheduleResourc
 		logger.InfoContext(ctx, "degraded orphaned failed resources", "count", degraded)
 	}
 
-	resources := make([]*sqlc.DeltaResource, 0, len(expired)+len(rescued))
-	resources = append(resources, expired...)
-	resources = append(resources, rescued...)
+	type rescheduledResource struct {
+		ID   int64
+		Kind string
+	}
+	resources := make([]rescheduledResource, 0, len(expired)+len(rescued))
+	for _, resource := range expired {
+		resources = append(resources, rescheduledResource{ID: resource.ID, Kind: resource.Kind})
+	}
+	for _, resource := range rescued {
+		resources = append(resources, rescheduledResource{ID: resource.ID, Kind: resource.Kind})
+	}
 
 	if len(resources) > 0 {
 		insertParams := make([]river.InsertManyParams, len(resources))
