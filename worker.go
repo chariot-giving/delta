@@ -82,10 +82,10 @@ func (w *controllerWorker[T]) Work(ctx context.Context, job *river.Job[Resource[
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			if err = tx.Commit(ctx); err != nil {
-				return fmt.Errorf("failed to commit transaction: %w", err)
+			if cerr := tx.Commit(ctx); cerr != nil {
+				return fmt.Errorf("failed to commit transaction: %w", cerr)
 			}
-			return river.JobCancel(fmt.Errorf("resource %s:%s no longer exists: %w", resource.Object.Kind(), resource.Object.ID(), err))
+			return river.JobCancel(fmt.Errorf("resource %s:%s no longer exists or is locked: %w", resource.Object.Kind(), resource.Object.ID(), err))
 		}
 		return fmt.Errorf("failed to get resource: %w", err)
 	}

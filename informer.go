@@ -92,7 +92,9 @@ func (i InformArgs[T]) Kind() string {
 func (i InformArgs[T]) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
 		MaxAttempts: 10,
-		Queue:       i.Kind(),
+		// Inform jobs run on the controller's queue, which is the only queue
+		// clients configured with this controller work.
+		Queue: i.object.Kind(),
 		UniqueOpts: river.UniqueOpts{
 			ByQueue: true,
 			ByState: []rivertype.JobState{
@@ -125,16 +127,21 @@ func (i *controllerInformer[T]) Work(ctx context.Context, job *river.Job[InformA
 		return fmt.Errorf("failed to get controller inform record: %w", err)
 	}
 
-	after := firstNonZero(job.Args.Options.After, &controller.LastInformTime)
+	options := job.Args.Options
+	if options == nil {
+		options = &InformOptions{}
+	}
+
+	after := firstNonZero(options.After, &controller.LastInformTime)
 	metadata := make(map[string]string)
-	if len(job.Args.Options.Labels) > 0 {
-		metadata = job.Args.Options.Labels
+	if len(options.Labels) > 0 {
+		metadata = options.Labels
 	}
 	informOpts := InformOptions{
 		Labels:  metadata,
 		After:   after,
-		OrderBy: firstNonZero(job.Args.Options.OrderBy),
-		Limit:   firstNonZero(job.Args.Options.Limit),
+		OrderBy: options.OrderBy,
+		Limit:   options.Limit,
 	}
 
 	informStart := time.Now()
