@@ -130,6 +130,10 @@ type Config struct {
 	//
 	// Defaults to an hour.
 	StuckScheduledThreshold time.Duration
+
+	// WorkerMiddleware runs around every job Delta works, including resource Work
+	// and controller Inform, after Delta's own middleware.
+	WorkerMiddleware []rivertype.WorkerMiddleware
 }
 
 // Client is a single isolated instance of Delta. Your application may use
@@ -239,10 +243,10 @@ func NewClient(dbPool *pgxpool.Pool, config *Config) (*Client, error) {
 			Workers:             client.workers,
 			SkipUnknownJobCheck: true,
 			// Logger:  c.config.Logger.With("name", "riverqueue"),
-			WorkerMiddleware: []rivertype.WorkerMiddleware{
+			WorkerMiddleware: append([]rivertype.WorkerMiddleware{
 				middleware.NewLoggingMiddleware(client.config.Logger),
 				&jobContextMiddleware{client: client},
-			},
+			}, client.config.WorkerMiddleware...),
 			PeriodicJobs: []*river.PeriodicJob{
 				river.NewPeriodicJob(
 					river.PeriodicInterval(firstNonZero(client.config.MaintenanceJobInterval, time.Minute*1)),
